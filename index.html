@@ -12,7 +12,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
     import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-    import { getFirestore, doc, getDoc, setDoc, onSnapshot }
+    import { getFirestore, doc, getDoc, setDoc, onSnapshot, deleteField }
       from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
     const firebaseConfig = {
@@ -30,7 +30,7 @@
     const db   = getFirestore(app);
 
     // ── Expose Firebase to app ──────────────────────────────────────────────
-    window._fb = { auth, db, doc, getDoc, setDoc, onSnapshot, signInWithEmailAndPassword, signOut, onAuthStateChanged };
+    window._fb = { auth, db, doc, getDoc, setDoc, onSnapshot, deleteField, signInWithEmailAndPassword, signOut, onAuthStateChanged };
   </script>
 
   <!-- React + Babel -->
@@ -191,9 +191,13 @@ function useStore(uid) {
     }, 1000);
   }, [uid, ready]);
 
+  const cleanupDone = useRef(false);
+
   // ── Auto-cleanup ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!ready || !autoCleanup) return;
+    if (!ready || cleanupDone.current) return;
+    cleanupDone.current = true;
+    if (!autoCleanup) return;
     const today = new Date();
     const currentDay = today.getDate();
     if (currentDay >= cleanupDay) {
@@ -207,7 +211,7 @@ function useStore(uid) {
         return filtered.length !== prev.length ? filtered : prev;
       });
     }
-  }, [ready, autoCleanup, cleanupDay]);
+  }, [ready]);
 
   // ── Persist on every state change ───────────────────────────────────────
   useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup); },
@@ -241,15 +245,35 @@ function useStore(uid) {
     if (accounts.length<=1) return;
     setAccounts(p => p.filter(a => a.id !== id));
     setTpl(p => { const next = {...p}; delete next[id]; return next; });
+    // Explicitly delete the template field in Firestore (merge:true won't delete missing fields)
+    const { db, doc, setDoc, deleteField } = fb();
+    setDoc(doc(db, "budgets", uid), { templates: { [id]: deleteField() } }, { merge: true });
   };
   const updateAccount = (id,updates)=> setAccounts(p=>p.map(a=>a.id===id?{...a,...updates}:a));
+  const moveAccount   = (id, dir) => {
+    setAccounts(p => {
+      const type  = p.find(a => a.id === id)?.type;
+      const group = p.filter(a => a.type === type);
+      const rest  = p.filter(a => a.type !== type);
+      const idx   = group.findIndex(a => a.id === id);
+      const newIdx = idx + dir;
+      if (newIdx < 0 || newIdx >= group.length) return p;
+      const newGroup = [...group];
+      [newGroup[idx], newGroup[newIdx]] = [newGroup[newIdx], newGroup[idx]];
+      // Rebuild full array preserving relative positions of the other group
+      return p.map(a => {
+        if (a.type === type) return newGroup.shift();
+        return a;
+      });
+    });
+  };
   const updateCleanupDay  = day  => setCleanupDay(day);
   const updateAutoCleanup = val  => setAutoCleanup(val);
   const cleanupMonth  = monthKey    => setTx(prev => prev.filter(t => mKey(t.date) !== monthKey));
 
   return { ready, transactions, add, remove, update, togglePointed,
     templates, addTplItem, removeTplItem, applyTemplate,
-    accounts, addAccount, removeAccount, updateAccount,
+    accounts, addAccount, removeAccount, updateAccount, moveAccount,
     cleanupDay, updateCleanupDay, autoCleanup, updateAutoCleanup, cleanupMonth };
 }
 
@@ -784,40 +808,19 @@ function Settings({ store, user }) {
               Gérez vos comptes (max. 10). Les soldes épargne 💰 sont saisis manuellement.
             </p>
             <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:12 }}>
-              {store.accounts.map(acc=>(
-                <div key={acc.id} style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:"12px 14px" }}>
-                  {!editingAccounts ? (
-                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                      <span style={{ fontSize:20 }}>{acc.type==="savings"?"💰":"💳"}</span>
-                      <div style={{ flex:1 }}>
-                        <p style={{ fontSize:14, fontWeight:500 }}>{acc.name}</p>
-                        <p style={{ fontSize:11, color:"var(--text-muted)" }}>{acc.type==="savings"?"Épargne — "+fmtEur(acc.balance):"Compte courant"}</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                      <div style={{ display:"flex", gap:8 }}>
-                        <input value={acc.name} onChange={e=>store.updateAccount(acc.id,{name:e.target.value})} placeholder="Nom du compte"
-                          style={{ flex:1, fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
-                        <button onClick={()=>store.removeAccount(acc.id)} disabled={store.accounts.length<=1}
-                          style={{ padding:"8px 12px", borderRadius:8, background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13, fontWeight:600, opacity:store.accounts.length<=1?0.4:1 }}>✕</button>
-                      </div>
-                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
-                        {[["checking","💳 Courant"],["savings","💰 Épargne"]].map(([type,label])=>(
-                          <button key={type} onClick={()=>store.updateAccount(acc.id,{type})}
-                            style={{ padding:"8px", borderRadius:8, border:"1px solid", borderColor:acc.type===type?"var(--gold)":"var(--border)", background:acc.type===type?"var(--gold-dim)":"var(--bg)", color:acc.type===type?"var(--gold)":"var(--text-muted)", fontSize:12, fontWeight:600 }}>{label}</button>
-                        ))}
-                      </div>
-                      {acc.type==="savings" && (
-                        <div>
-                          <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Solde</label>
-                          <input type="number" step="0.01" value={acc.balance||0} onChange={e=>store.updateAccount(acc.id,{balance:parseFloat(e.target.value)||0})} placeholder="0.00"
-                            style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+              {/* Comptes courants */}
+              {store.accounts.filter(a=>a.type==="checking").length > 0 && editingAccounts && (
+                <p style={{ fontSize:10, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em" }}>💳 Comptes courants</p>
+              )}
+              {store.accounts.filter(a=>a.type==="checking").map((acc)=>(
+                <AccountRow key={acc.id} acc={acc} store={store} editingAccounts={editingAccounts} />
+              ))}
+              {/* Comptes épargne */}
+              {store.accounts.filter(a=>a.type==="savings").length > 0 && editingAccounts && (
+                <p style={{ fontSize:10, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", marginTop:4 }}>💰 Comptes épargne</p>
+              )}
+              {store.accounts.filter(a=>a.type==="savings").map((acc)=>(
+                <AccountRow key={acc.id} acc={acc} store={store} editingAccounts={editingAccounts} />
               ))}
             </div>
             {!editingAccounts ? (
@@ -937,6 +940,63 @@ function Toggle({ checked, onChange }) {
     <button onClick={onChange} style={{ width:48,height:26, borderRadius:13, background:checked?"var(--gold)":"var(--surface3)", border:"none", position:"relative", transition:"background 0.25s", flexShrink:0 }}>
       <div style={{ width:20,height:20, borderRadius:"50%", background:"#fff", position:"absolute", top:3, left:checked?25:3, transition:"left 0.25s", boxShadow:"0 1px 4px rgba(0,0,0,0.3)" }} />
     </button>
+  );
+}
+
+// ─── AccountRow ────────────────────────────────────────────────────────────
+function AccountRow({ acc, store, editingAccounts }) {
+  const sameType  = store.accounts.filter(a => a.type === acc.type);
+  const idx       = sameType.findIndex(a => a.id === acc.id);
+  const isFirst   = idx === 0;
+  const isLast    = idx === sameType.length - 1;
+  const canDelete = store.accounts.length > 1;
+
+  return (
+    <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:"12px 14px" }}>
+      {!editingAccounts ? (
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:20 }}>{acc.type==="savings"?"💰":"💳"}</span>
+          <div style={{ flex:1 }}>
+            <p style={{ fontSize:14, fontWeight:500 }}>{acc.name}</p>
+            <p style={{ fontSize:11, color:"var(--text-muted)" }}>{acc.type==="savings"?"Épargne — "+fmtEur(acc.balance):"Compte courant"}</p>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {/* Nom + boutons ordre + supprimer */}
+          <div style={{ display:"flex", gap:6 }}>
+            <input value={acc.name} onChange={e=>store.updateAccount(acc.id,{name:e.target.value})} placeholder="Nom du compte"
+              style={{ flex:1, fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+            {/* Boutons déplacement (uniquement si plusieurs comptes du même type) */}
+            {sameType.length > 1 && (
+              <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+                <button onClick={()=>store.moveAccount(acc.id,-1)} disabled={isFirst}
+                  style={{ padding:"3px 8px", borderRadius:6, background:"var(--surface3)", border:"1px solid var(--border)", color:isFirst?"var(--text-sub)":"var(--text)", fontSize:12, opacity:isFirst?0.3:1, lineHeight:1 }}>▲</button>
+                <button onClick={()=>store.moveAccount(acc.id,1)} disabled={isLast}
+                  style={{ padding:"3px 8px", borderRadius:6, background:"var(--surface3)", border:"1px solid var(--border)", color:isLast?"var(--text-sub)":"var(--text)", fontSize:12, opacity:isLast?0.3:1, lineHeight:1 }}>▼</button>
+              </div>
+            )}
+            <button onClick={()=>store.removeAccount(acc.id)} disabled={!canDelete}
+              style={{ padding:"8px 12px", borderRadius:8, background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13, fontWeight:600, opacity:canDelete?1:0.4, alignSelf:"stretch" }}>✕</button>
+          </div>
+          {/* Type courant / épargne */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+            {[["checking","💳 Courant"],["savings","💰 Épargne"]].map(([type,label])=>(
+              <button key={type} onClick={()=>store.updateAccount(acc.id,{type})}
+                style={{ padding:"8px", borderRadius:8, border:"1px solid", borderColor:acc.type===type?"var(--gold)":"var(--border)", background:acc.type===type?"var(--gold-dim)":"var(--bg)", color:acc.type===type?"var(--gold)":"var(--text-muted)", fontSize:12, fontWeight:600 }}>{label}</button>
+            ))}
+          </div>
+          {/* Solde (épargne uniquement) */}
+          {acc.type==="savings" && (
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Solde</label>
+              <input type="number" step="0.01" value={acc.balance||0} onChange={e=>store.updateAccount(acc.id,{balance:parseFloat(e.target.value)||0})} placeholder="0.00"
+                style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
