@@ -187,31 +187,29 @@ function useStore(uid) {
     if (!uid || !ready) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      fbSave(uid, { transactions: tx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac });
+      // Clean undefined values that Firestore rejects
+      const cleanTx = tx.map(t => {
+        const clean = {};
+        Object.keys(t).forEach(k => { if (t[k] !== undefined) clean[k] = t[k]; });
+        return clean;
+      });
+      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac });
     }, 1000);
   }, [uid, ready]);
 
-  const cleanupDone = useRef(false);
-
   // ── Auto-cleanup ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!ready || cleanupDone.current) return;
-    cleanupDone.current = true;
-    if (!autoCleanup) return;
+    if (!ready || !autoCleanup) return;
     const today = new Date();
     const currentDay = today.getDate();
     if (currentDay >= cleanupDay) {
-      const currentYear = today.getFullYear();
-      const currentMonth = today.getMonth();
-      const prevMonth = currentMonth === 0 ? 11 : currentMonth - 1;
-      const prevYear  = currentMonth === 0 ? currentYear - 1 : currentYear;
-      const prevKey   = `${prevYear}-${String(prevMonth+1).padStart(2,'0')}`;
+      const currentKey = nowMKey();
       setTx(prev => {
-        const filtered = prev.filter(t => mKey(t.date) !== prevKey);
+        const filtered = prev.filter(t => mKey(t.date) >= currentKey);
         return filtered.length !== prev.length ? filtered : prev;
       });
     }
-  }, [ready]);
+  }, [ready, autoCleanup, cleanupDay, transactions]);
 
   // ── Persist on every state change ───────────────────────────────────────
   useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup); },
@@ -220,7 +218,12 @@ function useStore(uid) {
   // ── Actions ─────────────────────────────────────────────────────────────
   const add    = tx  => setTx(p => [{ ...tx, id:genId(), pointed:false }, ...p]);
   const remove = id  => setTx(p => p.filter(t => t.id !== id));
-  const update = (id, u) => setTx(p => p.map(t => t.id===id ? {...t,...u, _tpl:undefined} : t));
+  const update = (id, u) => setTx(p => p.map(t => {
+    if (t.id !== id) return t;
+    const updated = { ...t, ...u };
+    delete updated._tpl;
+    return updated;
+  }));
   const togglePointed = id => setTx(p => p.map(t => t.id===id ? {...t,pointed:!t.pointed} : t));
 
   const addTplItem    = (accountId, parity, item) => setTpl(p => {
@@ -244,6 +247,7 @@ function useStore(uid) {
   const removeAccount = id => {
     if (accounts.length<=1) return;
     setAccounts(p => p.filter(a => a.id !== id));
+    setTx(p => p.filter(t => t.accountId !== id));
     setTpl(p => { const next = {...p}; delete next[id]; return next; });
     // Explicitly delete the template field in Firestore (merge:true won't delete missing fields)
     const { db, doc, setDoc, deleteField } = fb();
@@ -269,7 +273,7 @@ function useStore(uid) {
   };
   const updateCleanupDay  = day  => setCleanupDay(day);
   const updateAutoCleanup = val  => setAutoCleanup(val);
-  const cleanupMonth  = monthKey    => setTx(prev => prev.filter(t => mKey(t.date) !== monthKey));
+  const cleanupMonth  = ()    => setTx(prev => prev.filter(t => mKey(t.date) >= nowMKey()));
 
   return { ready, transactions, add, remove, update, togglePointed,
     templates, addTplItem, removeTplItem, applyTemplate,
@@ -448,7 +452,7 @@ function TxRow({ tx, deletable, onDelete, onEdit, onTogglePointed, clicked, onTo
       <div style={{ flex:1, minWidth:0 }}>
         <p style={{ fontSize:14, fontWeight:500, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
           {tx.title}
-          {tx._tpl && <span style={{ marginLeft:6, fontSize:10, color:"var(--gold)", background:"var(--gold-dim)", padding:"1px 5px", borderRadius:4, fontWeight:600 }}>modèle</span>}
+          {tx._tpl && !tx.pointed && <span style={{ marginLeft:6, fontSize:10, color:"var(--gold)", background:"var(--gold-dim)", padding:"1px 5px", borderRadius:4, fontWeight:600 }}>modèle</span>}
         </p>
         <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:1 }}>{fmtDate(tx.date)}</p>
       </div>
@@ -498,7 +502,7 @@ function Dashboard({ store, onAdd }) {
     const Y = today.getFullYear(), M = today.getMonth(), D = today.getDate();
     const fmt = (y,m) => `${y}-${String(m+1).padStart(2,'0')}`;
     const result = [];
-    if (D < store.cleanupDay) {
+    if (!store.autoCleanup || D < store.cleanupDay) {
       const pm = M===0?11:M-1, py = M===0?Y-1:Y;
       const pk = fmt(py,pm);
       if (store.transactions.some(t=>mKey(t.date)===pk)) result.push(pk);
@@ -509,7 +513,7 @@ function Dashboard({ store, onAdd }) {
     const m2=m1===11?0:m1+1, y2=m1===11?y1+1:y1;
     result.push(fmt(y2,m2));
     return result;
-  }, [store.cleanupDay, store.transactions.length]);
+  }, [store.cleanupDay, store.autoCleanup, store.transactions.length]);
 
   const txM = store.transactions.filter(t => mKey(t.date)===sel && (selectedAccountId==="all"||t.accountId===selectedAccountId));
   const income = txM.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
@@ -720,21 +724,15 @@ function Settings({ store, user }) {
   const totalExpense= tpl.items.filter(i=>i.type==="expense").reduce((s,i)=>s+i.amount,0);
 
   const handleCleanupClick = () => {
-    const today = new Date();
-    const Y=today.getFullYear(), M=today.getMonth();
-    const pm=M===0?11:M-1, py=M===0?Y-1:Y;
-    const prevKey  = `${py}-${String(pm+1).padStart(2,'0')}`;
-    const prevName = new Date(py,pm,1).toLocaleDateString("fr-FR",{month:"long",year:"numeric"});
-    const count    = store.transactions.filter(t=>mKey(t.date)===prevKey).length;
-    setCleanupMessage(count===0 ? `Aucune transaction pour ${prevName}.` : `Supprimer ${count} transaction(s) de ${prevName} ?`);
+    const currentKey = nowMKey();
+    const count = store.transactions.filter(t => mKey(t.date) < currentKey).length;
+    const currentName = new Date().toLocaleDateString("fr-FR", { month:"long", year:"numeric" });
+    setCleanupMessage(count === 0 ? `Aucune transaction antérieure à ${currentName}.` : `Supprimer ${count} transaction(s) antérieure(s) à ${currentName} ?`);
     setShowCleanupConfirm(true);
   };
 
   const confirmCleanup = () => {
-    const today=new Date(), Y=today.getFullYear(), M=today.getMonth();
-    const pm=M===0?11:M-1, py=M===0?Y-1:Y;
-    const prevKey=`${py}-${String(pm+1).padStart(2,'0')}`;
-    store.cleanupMonth(prevKey);
+    store.cleanupMonth();
     setShowCleanupConfirm(false);
   };
 
@@ -759,45 +757,6 @@ function Settings({ store, user }) {
               </div>
             </div>
             <Toggle checked={theme==="light"} onChange={toggle} />
-          </div>
-        </Section>
-
-        {/* Nettoyage */}
-        <Section title="Nettoyage automatique" icon="🗑️">
-          <div style={{ padding:"14px 16px" }}>
-            {/* Toggle activation */}
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
-              <div>
-                <p style={{ fontSize:14, fontWeight:500 }}>Nettoyage automatique</p>
-                <p style={{ fontSize:12, color:"var(--text-muted)", marginTop:2 }}>
-                  {store.autoCleanup ? "Actif — suppression automatique du mois précédent" : "Inactif — aucune suppression automatique"}
-                </p>
-              </div>
-              <Toggle checked={store.autoCleanup} onChange={()=>store.updateAutoCleanup(!store.autoCleanup)} />
-            </div>
-
-            {/* Sélecteur de jour (grisé si désactivé) */}
-            <div style={{ opacity: store.autoCleanup ? 1 : 0.4, pointerEvents: store.autoCleanup ? "auto" : "none", transition:"opacity 0.2s" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
-                <div style={{ flex:1 }}>
-                  <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:6 }}>Jour de nettoyage</p>
-                  <select value={store.cleanupDay} onChange={e=>store.updateCleanupDay(parseInt(e.target.value,10))}
-                    style={{ fontSize:15, fontWeight:500, width:"100%", padding:"10px 12px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }}>
-                    {Array.from({length:28},(_,i)=>i+1).map(d=>(
-                      <option key={d} value={d} style={{ background:"var(--select-bg)" }}>{d===1?"1er":d} du mois</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ padding:"12px 16px", background:"var(--gold-dim)", border:"1px solid var(--gold)", borderRadius:"var(--radius-sm)", textAlign:"center" }}>
-                  <p style={{ fontSize:10, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:2 }}>Actuel</p>
-                  <p style={{ fontSize:24, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--gold)" }}>{store.cleanupDay}</p>
-                </div>
-              </div>
-            </div>
-
-            <button onClick={handleCleanupClick} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13, fontWeight:600 }}>
-              🗑️ Nettoyer le mois précédent maintenant
-            </button>
           </div>
         </Section>
 
@@ -891,6 +850,45 @@ function Settings({ store, user }) {
           )}
         </Section>
 
+        {/* Nettoyage */}
+        <Section title="Nettoyage automatique" icon="🗑️">
+          <div style={{ padding:"14px 16px" }}>
+            {/* Toggle activation */}
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <div>
+                <p style={{ fontSize:14, fontWeight:500 }}>Nettoyage automatique</p>
+                <p style={{ fontSize:12, color:"var(--text-muted)", marginTop:2 }}>
+                  {store.autoCleanup ? "Actif — les transactions des mois passés sont supprimées automatiquement" : "Inactif — aucune suppression automatique"}
+                </p>
+              </div>
+              <Toggle checked={store.autoCleanup} onChange={()=>store.updateAutoCleanup(!store.autoCleanup)} />
+            </div>
+
+            {/* Sélecteur de jour (grisé si désactivé) */}
+            <div style={{ opacity: store.autoCleanup ? 1 : 0.4, pointerEvents: store.autoCleanup ? "auto" : "none", transition:"opacity 0.2s" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
+                <div style={{ flex:1 }}>
+                  <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:6 }}>Jour de nettoyage</p>
+                  <select value={store.cleanupDay} onChange={e=>store.updateCleanupDay(parseInt(e.target.value,10))}
+                    style={{ fontSize:15, fontWeight:500, width:"100%", padding:"10px 12px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }}>
+                    {Array.from({length:28},(_,i)=>i+1).map(d=>(
+                      <option key={d} value={d} style={{ background:"var(--select-bg)" }}>{d===1?"1er":d} du mois</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ padding:"12px 16px", background:"var(--gold-dim)", border:"1px solid var(--gold)", borderRadius:"var(--radius-sm)", textAlign:"center" }}>
+                  <p style={{ fontSize:10, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:2 }}>Actuel</p>
+                  <p style={{ fontSize:24, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--gold)" }}>{store.cleanupDay}</p>
+                </div>
+              </div>
+            </div>
+
+            <button onClick={handleCleanupClick} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13, fontWeight:600 }}>
+              🗑️ Nettoyer les mois précédents maintenant
+            </button>
+          </div>
+        </Section>
+
         {/* Données */}
         <Section title="Données" icon="💾">
           <div style={{ padding:"14px 16px" }}>
@@ -945,11 +943,19 @@ function Toggle({ checked, onChange }) {
 
 // ─── AccountRow ────────────────────────────────────────────────────────────
 function AccountRow({ acc, store, editingAccounts }) {
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const sameType  = store.accounts.filter(a => a.type === acc.type);
   const idx       = sameType.findIndex(a => a.id === acc.id);
   const isFirst   = idx === 0;
   const isLast    = idx === sameType.length - 1;
   const canDelete = store.accounts.length > 1;
+  const txCount   = store.transactions.filter(t => t.accountId === acc.id).length;
+
+  const handleDeleteClick = () => {
+    if (!canDelete) return;
+    if (txCount > 0) { setShowDeleteConfirm(true); }
+    else { store.removeAccount(acc.id); }
+  };
 
   return (
     <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:"12px 14px" }}>
@@ -976,7 +982,7 @@ function AccountRow({ acc, store, editingAccounts }) {
                   style={{ padding:"3px 8px", borderRadius:6, background:"var(--surface3)", border:"1px solid var(--border)", color:isLast?"var(--text-sub)":"var(--text)", fontSize:12, opacity:isLast?0.3:1, lineHeight:1 }}>▼</button>
               </div>
             )}
-            <button onClick={()=>store.removeAccount(acc.id)} disabled={!canDelete}
+            <button onClick={handleDeleteClick} disabled={!canDelete}
               style={{ padding:"8px 12px", borderRadius:8, background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13, fontWeight:600, opacity:canDelete?1:0.4, alignSelf:"stretch" }}>✕</button>
           </div>
           {/* Type courant / épargne */}
@@ -994,6 +1000,22 @@ function AccountRow({ acc, store, editingAccounts }) {
                 style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
             </div>
           )}
+        </div>
+      )}
+
+      {showDeleteConfirm && (
+        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={e=>e.target===e.currentTarget&&setShowDeleteConfirm(false)}>
+          <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
+            <p style={{ fontSize:18, fontWeight:600, marginBottom:12 }}>Supprimer le compte</p>
+            <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
+              Le compte « {acc.name} » contient <strong style={{ color:"var(--red)" }}>{txCount} transaction{txCount>1?"s":""}</strong> qui {txCount>1?"seront également supprimées":"sera également supprimée"}.
+            </p>
+            <div style={{ display:"flex", gap:10 }}>
+              <button onClick={()=>setShowDeleteConfirm(false)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
+              <button onClick={()=>{store.removeAccount(acc.id);setShowDeleteConfirm(false);}} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
