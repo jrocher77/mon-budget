@@ -241,13 +241,20 @@ function useStore(uid) {
     const acct = p[accountId] || emptyAcctTpl();
     return { ...p, [accountId]: { ...acct, [parity]: { items: acct[parity].items.filter(i=>i.id!==id) } } };
   });
+  const updateTplItem = (accountId, parity, id, updates) => setTpl(p => {
+    const acct = p[accountId] || emptyAcctTpl();
+    return { ...p, [accountId]: { ...acct, [parity]: { items: acct[parity].items.map(i => i.id===id ? {...i,...updates} : i) } } };
+  });
   const applyTemplate = (monthK, accountId) => {
     const parity = isEven(monthK) ? "even" : "odd";
     const acct   = templates[accountId] || emptyAcctTpl();
     const items  = acct[parity].items;
     if (!items.length) return;
     if (transactions.some(t => t._tpl===monthK && t.accountId===accountId)) return;
-    setTx(p => [...items.map(item => ({...item,id:genId(),date:monthK+"-01",accountId,_tpl:monthK})), ...p]);
+    setTx(p => [...items.map(item => {
+      const day = String(item.day || 1).padStart(2, '0');
+      return {...item, id:genId(), date:monthK+"-"+day, accountId, _tpl:monthK};
+    }), ...p]);
   };
 
   const addAccount    = ()          => { if (accounts.length>=10) return; setAccounts(p=>[...p,{id:genId(),name:`Nouveau compte ${p.length+1}`,type:"checking",balance:0}]); };
@@ -283,7 +290,7 @@ function useStore(uid) {
   const cleanupMonth  = ()    => setTx(prev => prev.filter(t => mKey(t.date) >= nowMKey()));
 
   return { ready, transactions, add, remove, update, togglePointed,
-    templates, addTplItem, removeTplItem, applyTemplate,
+    templates, addTplItem, removeTplItem, updateTplItem, applyTemplate,
     accounts, addAccount, removeAccount, updateAccount, moveAccount,
     cleanupDay, updateCleanupDay, autoCleanup, updateAutoCleanup, cleanupMonth };
 }
@@ -714,6 +721,7 @@ function Settings({ store, user }) {
   const [activeParity,       setParity]          = useState("even");
   const [activeAccountId,    setActiveAccountId] = useState(() => checkingAccounts[0]?.id || "");
   const [showAdd,            setShowAdd]          = useState(false);
+  const [editingTplItem,     setEditingTplItem]   = useState(null); // { item, parity }
   const [editingAccounts,    setEditingAccounts]  = useState(false);
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [cleanupMessage,     setCleanupMessage]   = useState("");
@@ -844,7 +852,7 @@ function Settings({ store, user }) {
               : <div>{tpl.items.map((item,i)=>(
                   <div key={item.id}>
                     {i>0&&<div style={{ height:1, background:"var(--border)", margin:"0 16px" }} />}
-                    <TplItemRow item={item} onDelete={()=>store.removeTplItem(activeAccountId, activeParity, item.id)} />
+                    <TplItemRow item={item} onDelete={()=>store.removeTplItem(activeAccountId, activeParity, item.id)} onEdit={()=>setEditingTplItem({item, parity: activeParity})} />
                   </div>
                 ))}</div>
           }
@@ -909,6 +917,7 @@ function Settings({ store, user }) {
       </div>
 
       {showAdd && <TplAddModal onClose={()=>setShowAdd(false)} onSave={item=>{store.addTplItem(activeAccountId, activeParity, item);setShowAdd(false);}} />}
+      {editingTplItem && <TplAddModal item={editingTplItem.item} onClose={()=>setEditingTplItem(null)} onSave={updates=>{store.updateTplItem(activeAccountId, editingTplItem.parity, editingTplItem.item.id, updates);setEditingTplItem(null);}} />}
 
       {showCleanupConfirm && (
         <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
@@ -1029,7 +1038,7 @@ function AccountRow({ acc, store, editingAccounts }) {
   );
 }
 
-function TplItemRow({ item, onDelete }) {
+function TplItemRow({ item, onDelete, onEdit }) {
   const [hover, setHover] = useState(false);
   return (
     <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
@@ -1037,9 +1046,13 @@ function TplItemRow({ item, onDelete }) {
       <div style={{ width:36,height:36, borderRadius:9, flexShrink:0, background:item.type==="expense"?"var(--red-dim)":"var(--green-dim)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>{item.type==="expense"?"↑":"↓"}</div>
       <div style={{ flex:1, minWidth:0 }}>
         <p style={{ fontSize:14, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item.title}</p>
-        <p style={{ fontSize:11, color:"var(--text-sub)" }}>{fmtEur(item.amount)}</p>
+        <p style={{ fontSize:11, color:"var(--text-sub)" }}>
+          Le {item.day||1}{(item.day||1)===1?"er":""} du mois
+          {item.note ? ` · ${item.note}` : ""}
+        </p>
       </div>
       <p style={{ fontSize:14, fontWeight:700, flexShrink:0, color:item.type==="expense"?"var(--red)":"var(--green)" }}>{item.type==="expense"?"−":"+"}{fmtEur(item.amount)}</p>
+      {hover && <button onClick={onEdit} style={{ background:"var(--gold-dim)", border:"none", borderRadius:7, width:26,height:26, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--gold)", fontSize:13, flexShrink:0 }}>✎</button>}
       {hover && <button onClick={onDelete} style={{ background:"var(--red-dim)", border:"none", borderRadius:7, width:26,height:26, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--red)", fontSize:13, flexShrink:0 }}>✕</button>}
     </div>
   );
@@ -1067,23 +1080,26 @@ function Field({ label, children }) {
 }
 
 // ─── TplAddModal ───────────────────────────────────────────────────────────
-function TplAddModal({ onClose, onSave }) {
-  const [type,setType]=useState("expense");
-  const [title,setTitle]=useState("");
-  const [amount,setAmount]=useState("");
+function TplAddModal({ onClose, onSave, item }) {
+  const isEditing = !!item;
+  const [type,setType]=useState(item?.type||"expense");
+  const [title,setTitle]=useState(item?.title||"");
+  const [amount,setAmount]=useState(item?.amount?.toString()||"");
+  const [day,setDay]=useState(String(item?.day||"1"));
+  const [note,setNote]=useState(item?.note||"");
   const [error,setError]=useState("");
   const handleSave=()=>{
     if(!title.trim()) return setError("Veuillez saisir un libellé.");
     const amt=parseFloat(amount.replace(",","."));
     if(isNaN(amt)||amt<=0) return setError("Montant invalide.");
-    onSave({title:title.trim(),amount:amt,type});
+    onSave({title:title.trim(),amount:amt,type,day:parseInt(day,10),note});
   };
   return (
     <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", overflow:"hidden" }}>
         <div style={{ background:"var(--surface2)", padding:"16px 20px", borderBottom:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <p style={{ fontSize:17, fontWeight:600 }}>Opération récurrente</p>
+          <p style={{ fontSize:17, fontWeight:600 }}>{isEditing ? "Modifier l'opération" : "Opération récurrente"}</p>
           <button onClick={onClose} style={{ background:"transparent", border:"none", color:"var(--text-muted)", fontSize:18 }}>✕</button>
         </div>
         <div style={{ padding:"16px 20px", display:"flex", flexDirection:"column", gap:12 }}>
@@ -1099,8 +1115,18 @@ function TplAddModal({ onClose, onSave }) {
           <Field label="Libellé">
             <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex: Loyer, Salaire…" style={{ fontSize:15, width:"100%" }} />
           </Field>
+          <Field label="Jour du mois">
+            <select value={day} onChange={e=>setDay(e.target.value)} style={{ fontSize:15, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
+              {Array.from({length:28},(_,i)=>i+1).map(d=>(
+                <option key={d} value={d} style={{ background:"var(--select-bg)" }}>{d===1?"1er":d} du mois</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Note (optionnelle)">
+            <textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="Commentaire…" rows={2} style={{ fontSize:14, width:"100%", resize:"none", lineHeight:1.5 }} />
+          </Field>
           {error && <p style={{ color:"var(--red)", fontSize:13 }}>{error}</p>}
-          <button onClick={handleSave} style={{ padding:"13px", borderRadius:"var(--radius-sm)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:15, fontWeight:700 }}>Ajouter</button>
+          <button onClick={handleSave} style={{ padding:"13px", borderRadius:"var(--radius-sm)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:15, fontWeight:700 }}>{isEditing ? "Enregistrer" : "Ajouter"}</button>
         </div>
       </div>
     </div>
