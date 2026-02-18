@@ -118,6 +118,9 @@ function dBack(n)  { const d = new Date(); d.setDate(d.getDate()-n); return d.to
 // ─── Default data ──────────────────────────────────────────────────────────
 const DEFAULT_CLEANUP_DAY  = 10;
 const DEFAULT_AUTO_CLEANUP = true;
+const DEFAULT_SAVINGS_HISTORY = [];
+const DEFAULT_SAVINGS_SNAP_DAYS   = [1, 15];
+const DEFAULT_SAVINGS_SNAP_ACTIVE = true;
 const DEFAULT_ACCOUNTS = [
   { id: genId(), name: "Compte courant", type: "checking", balance: 0 },
 ];
@@ -159,7 +162,11 @@ function useStore(uid) {
   const [accounts,     setAccounts]    = useState(DEFAULT_ACCOUNTS);
   const [cleanupDay,   setCleanupDay]   = useState(DEFAULT_CLEANUP_DAY);
   const [autoCleanup,  setAutoCleanup]  = useState(DEFAULT_AUTO_CLEANUP);
+  const [savingsHistory,    setSavingsHistory]    = useState(DEFAULT_SAVINGS_HISTORY);
+  const [savingsSnapDays,   setSavingsSnapDays]   = useState(DEFAULT_SAVINGS_SNAP_DAYS);
+  const [savingsSnapActive, setSavingsSnapActive] = useState(DEFAULT_SAVINGS_SNAP_ACTIVE);
   const saveTimer = useRef(null);
+  const loadedRef = useRef(false); // true once Firestore data is fully loaded
 
   // ── Load from Firestore on mount ────────────────────────────────────────
   useEffect(() => {
@@ -177,20 +184,26 @@ function useStore(uid) {
             }
             return t;
           })() );
-        setAccounts(  (data.accounts  || DEFAULT_ACCOUNTS).map(a => ({ ...a, balance: a.balance || 0 })) );
+        setAccounts(  (data.accounts  || DEFAULT_ACCOUNTS).map(a => ({ ...a, balance: a.balance || 0, savingsSubtype: a.savingsSubtype || "available" })) );
         setCleanupDay(data.cleanupDay || DEFAULT_CLEANUP_DAY);
         setAutoCleanup(data.autoCleanup !== undefined ? data.autoCleanup : DEFAULT_AUTO_CLEANUP);
+        setSavingsHistory(data.savingsHistory || DEFAULT_SAVINGS_HISTORY);
+        setSavingsSnapDays(data.savingsSnapDays || DEFAULT_SAVINGS_SNAP_DAYS);
+        setSavingsSnapActive(data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE);
+        snapDaysRef.current   = data.savingsSnapDays   || DEFAULT_SAVINGS_SNAP_DAYS;
+        snapActiveRef.current = data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE;
       } else {
         // First time: save sample data
         setTx(SAMPLE_TX);
-        fbSave(uid, { transactions:SAMPLE_TX, templates:DEFAULT_TPL, accounts:DEFAULT_ACCOUNTS, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP });
+        fbSave(uid, { transactions:SAMPLE_TX, templates:DEFAULT_TPL, accounts:DEFAULT_ACCOUNTS, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:DEFAULT_SAVINGS_HISTORY, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE });
       }
+      loadedRef.current = true;
       setReady(true);
     });
   }, [uid]);
 
   // ── Auto-save to Firestore (debounced 1s) ───────────────────────────────
-  const persist = useCallback((tx, tpl, acct, cd, ac) => {
+  const persist = useCallback((tx, tpl, acct, cd, ac, sh, ssd, ssa) => {
     if (!uid || !ready) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
@@ -200,7 +213,7 @@ function useStore(uid) {
         Object.keys(t).forEach(k => { if (t[k] !== undefined) clean[k] = t[k]; });
         return clean;
       });
-      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac });
+      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa });
     }, 1000);
   }, [uid, ready]);
 
@@ -219,8 +232,8 @@ function useStore(uid) {
   }, [ready, autoCleanup, cleanupDay, transactions]);
 
   // ── Persist on every state change ───────────────────────────────────────
-  useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup); },
-    [transactions, templates, accounts, cleanupDay, autoCleanup, ready, persist]);
+  useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive); },
+    [transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive, ready, persist]);
 
   // ── Actions ─────────────────────────────────────────────────────────────
   const add    = tx  => setTx(p => [{ ...tx, id:genId(), pointed:false }, ...p]);
@@ -289,10 +302,44 @@ function useStore(uid) {
   const updateAutoCleanup = val  => setAutoCleanup(val);
   const cleanupMonth  = ()    => setTx(prev => prev.filter(t => mKey(t.date) >= nowMKey()));
 
+  // ── Savings history actions ──────────────────────────────────────────────
+  const addSavingsSnapshot = (entry) => setSavingsHistory(p => [{ ...entry, id: genId() }, ...p].sort((a,b) => b.date.localeCompare(a.date)));
+  const updateSavingsSnapshot = (id, updates) => setSavingsHistory(p => p.map(e => e.id===id ? {...e,...updates} : e));
+  const removeSavingsSnapshot = (id) => setSavingsHistory(p => p.filter(e => e.id !== id));
+
+  const snapDaysRef   = useRef(DEFAULT_SAVINGS_SNAP_DAYS);
+  const snapActiveRef = useRef(DEFAULT_SAVINGS_SNAP_ACTIVE);
+  useEffect(() => { snapDaysRef.current   = savingsSnapDays;   }, [savingsSnapDays]);
+  useEffect(() => { snapActiveRef.current = savingsSnapActive; }, [savingsSnapActive]);
+
+  // ── Auto-snapshot on configured days ────────────────────────────────────
+  // Runs once after Firestore data is fully loaded (loadedRef) to avoid
+  // triggering with default values before real config is available.
+  useEffect(() => {
+    if (!ready || !loadedRef.current) return;
+    if (!snapActiveRef.current) return;
+    const savingsAccounts = accounts.filter(a => a.type === "savings");
+    if (savingsAccounts.length === 0) return;
+
+    const today = new Date();
+    const d = today.getDate();
+    if (!snapDaysRef.current.includes(d)) return;
+
+    const pad = n => String(n).padStart(2, "0");
+    const dateKey = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(d)}`;
+    if (savingsHistory.some(e => e.date === dateKey)) return;
+
+    const available = savingsAccounts.filter(a => a.savingsSubtype !== "blocked").reduce((s, a) => s + (a.balance || 0), 0);
+    const blocked   = savingsAccounts.filter(a => a.savingsSubtype === "blocked").reduce((s, a) => s + (a.balance || 0), 0);
+    addSavingsSnapshot({ date: dateKey, available, blocked, auto: true, note: "" });
+  }, [ready]);
+
   return { ready, transactions, add, remove, update, togglePointed,
     templates, addTplItem, removeTplItem, updateTplItem, applyTemplate,
     accounts, addAccount, removeAccount, updateAccount, moveAccount,
-    cleanupDay, updateCleanupDay, autoCleanup, updateAutoCleanup, cleanupMonth };
+    cleanupDay, updateCleanupDay, autoCleanup, updateAutoCleanup, cleanupMonth,
+    savingsHistory, addSavingsSnapshot, updateSavingsSnapshot, removeSavingsSnapshot,
+    savingsSnapDays, setSavingsSnapDays, savingsSnapActive, setSavingsSnapActive };
 }
 
 // ─── Login Screen ──────────────────────────────────────────────────────────
@@ -396,9 +443,10 @@ function App() {
     <ThemeCtx.Provider value={{ theme, toggle:()=>setTheme(t=>t==="dark"?"light":"dark") }}>
       <div style={{ display:"flex", flexDirection:"column", height:"100vh", maxWidth:480, margin:"0 auto", background:"var(--bg)", transition:"background 0.3s" }}>
         <div style={{ flex:1, overflowY:"auto", paddingBottom:80 }}>
-          {tab==="dashboard"    && <Dashboard    store={store} onAdd={handleOpenForm} />}
-          {tab==="transactions" && <Transactions store={store} onAdd={handleOpenForm} />}
-          {tab==="settings"     && <Settings     store={store} user={user} />}
+          {tab==="dashboard"     && <Dashboard    store={store} onAdd={handleOpenForm} onGoSavings={()=>setTab("savingsStats")} />}
+          {tab==="transactions"  && <Transactions store={store} onAdd={handleOpenForm} />}
+          {tab==="settings"      && <Settings     store={store} user={user} />}
+          {tab==="savingsStats"  && <SavingsStats store={store} onBack={()=>setTab("dashboard")} />}
         </div>
         <TabBar tab={tab} setTab={setTab} />
         {showForm && <FormModal store={store} account={formAccount} onClose={()=>setForm(false)} />}
@@ -504,7 +552,7 @@ function DeleteModal({ tx, onCancel, onConfirm }) {
 }
 
 // ─── Dashboard ─────────────────────────────────────────────────────────────
-function Dashboard({ store, onAdd }) {
+function Dashboard({ store, onAdd, onGoSavings }) {
   const [sel,              setSel]            = useState(nowMKey());
   const [selectedAccountId,setSelectedAccount] = useState("all");
   const [editingTx,        setEditingTx]      = useState(null);
@@ -610,12 +658,18 @@ function Dashboard({ store, onAdd }) {
             {accountBalances.savings.length>0 && <>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:10 }}><span style={{ fontSize:24 }}>💰</span><p style={{ fontSize:14, fontWeight:600, color:"var(--text)", letterSpacing:"0.04em", textTransform:"uppercase" }}>Comptes épargne</p></div>
-                <p style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:savingsBalance>=0?"var(--green)":"var(--red)" }}>{fmtEur(savingsBalance)}</p>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <p style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:savingsBalance>=0?"var(--green)":"var(--red)" }}>{fmtEur(savingsBalance)}</p>
+                  <button onClick={onGoSavings} style={{ padding:"5px 10px", borderRadius:8, background:"var(--gold-dim)", border:"1px solid var(--gold)", color:"var(--gold)", fontSize:11, fontWeight:700, whiteSpace:"nowrap", flexShrink:0 }}>📈 Stats</button>
+                </div>
               </div>
               <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
                 {accountBalances.savings.map(({account,balance})=>(
                   <div key={account.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:"var(--surface2)", borderRadius:"var(--radius-sm)" }}>
-                    <span style={{ fontSize:13, fontWeight:500 }}>{account.name}</span>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:13, fontWeight:500 }}>{account.name}</span>
+                      <span style={{ fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:6, background:account.savingsSubtype==="blocked"?"var(--red-dim)":"var(--green-dim)", color:account.savingsSubtype==="blocked"?"var(--red)":"var(--green)" }}>{account.savingsSubtype==="blocked"?"🔒 Bloquée":"✓ Disponible"}</span>
+                    </div>
                     <span style={{ fontSize:14, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:balance>=0?"var(--green)":"var(--red)" }}>{fmtEur(balance)}</span>
                   </div>
                 ))}
@@ -721,7 +775,7 @@ function Settings({ store, user }) {
   const [activeParity,       setParity]          = useState("even");
   const [activeAccountId,    setActiveAccountId] = useState(() => checkingAccounts[0]?.id || "");
   const [showAdd,            setShowAdd]          = useState(false);
-  const [editingTplItem,     setEditingTplItem]   = useState(null); // { item, parity }
+  const [editingTplItem,     setEditingTplItem]   = useState(null);
   const [editingAccounts,    setEditingAccounts]  = useState(false);
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [cleanupMessage,     setCleanupMessage]   = useState("");
@@ -904,6 +958,56 @@ function Settings({ store, user }) {
           </div>
         </Section>
 
+        {/* Snapshots épargne */}
+        <Section title="Snapshots épargne" icon="💰">
+          <div style={{ padding:"14px 16px" }}>
+            {/* Toggle activation */}
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+              <div>
+                <p style={{ fontSize:14, fontWeight:500 }}>Snapshots automatiques</p>
+                <p style={{ fontSize:12, color:"var(--text-muted)", marginTop:2 }}>
+                  {store.savingsSnapActive ? "Actifs — l'épargne est enregistrée automatiquement" : "Inactifs — aucun snapshot automatique"}
+                </p>
+              </div>
+              <Toggle checked={store.savingsSnapActive} onChange={()=>store.setSavingsSnapActive(!store.savingsSnapActive)} />
+            </div>
+
+            {/* Sélecteur des jours */}
+            <div style={{ opacity: store.savingsSnapActive ? 1 : 0.4, pointerEvents: store.savingsSnapActive ? "auto" : "none", transition:"opacity 0.2s" }}>
+              <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:10 }}>
+                Jours de snapshot — {store.savingsSnapDays.length}/10 sélectionné{store.savingsSnapDays.length > 1 ? "s" : ""}
+              </p>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:5 }}>
+                {Array.from({length:28}, (_,i) => i+1).map(day => {
+                  const selected = store.savingsSnapDays.includes(day);
+                  const canAdd   = store.savingsSnapDays.length < 10;
+                  const toggle   = () => {
+                    if (selected) {
+                      store.setSavingsSnapDays(store.savingsSnapDays.filter(d => d !== day));
+                    } else if (canAdd) {
+                      store.setSavingsSnapDays([...store.savingsSnapDays, day].sort((a,b)=>a-b));
+                    }
+                  };
+                  return (
+                    <button key={day} onClick={toggle} disabled={!selected && !canAdd}
+                      style={{ padding:"7px 2px", borderRadius:7, border:"1px solid", fontSize:12, fontWeight:600, textAlign:"center",
+                        borderColor: selected ? "var(--gold)" : "var(--border)",
+                        background:  selected ? "var(--gold-dim)" : "var(--bg)",
+                        color:       selected ? "var(--gold)" : (!canAdd ? "var(--text-sub)" : "var(--text-muted)"),
+                        opacity:     !selected && !canAdd ? 0.4 : 1,
+                        transition:  "all 0.15s" }}>
+                      {day}
+                    </button>
+                  );
+                })}
+              </div>
+              <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:10 }}>
+                Jours 29, 30, 31 exclus pour garantir la compatibilité avec tous les mois.
+              </p>
+            </div>
+          </div>
+        </Section>
+
         {/* Données */}
         <Section title="Données" icon="💾">
           <div style={{ padding:"14px 16px" }}>
@@ -980,7 +1084,11 @@ function AccountRow({ acc, store, editingAccounts }) {
           <span style={{ fontSize:20 }}>{acc.type==="savings"?"💰":"💳"}</span>
           <div style={{ flex:1 }}>
             <p style={{ fontSize:14, fontWeight:500 }}>{acc.name}</p>
-            <p style={{ fontSize:11, color:"var(--text-muted)" }}>{acc.type==="savings"?"Épargne — "+fmtEur(acc.balance):"Compte courant"}</p>
+            <p style={{ fontSize:11, color:"var(--text-muted)" }}>
+              {acc.type==="savings"
+                ? (acc.savingsSubtype==="blocked" ? "🔒 Bloquée — " : "✓ Disponible — ") + fmtEur(acc.balance)
+                : "Compte courant"}
+            </p>
           </div>
         </div>
       ) : (
@@ -1008,6 +1116,15 @@ function AccountRow({ acc, store, editingAccounts }) {
                 style={{ padding:"8px", borderRadius:8, border:"1px solid", borderColor:acc.type===type?"var(--gold)":"var(--border)", background:acc.type===type?"var(--gold-dim)":"var(--bg)", color:acc.type===type?"var(--gold)":"var(--text-muted)", fontSize:12, fontWeight:600 }}>{label}</button>
             ))}
           </div>
+          {/* Sous-type épargne (disponible / bloquée) */}
+          {acc.type==="savings" && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+              <button onClick={()=>store.updateAccount(acc.id,{savingsSubtype:"available"})}
+                style={{ padding:"8px", borderRadius:8, border:"1px solid", borderColor:(acc.savingsSubtype||"available")==="available"?"var(--green)":"var(--border)", background:(acc.savingsSubtype||"available")==="available"?"var(--green-dim)":"var(--bg)", color:(acc.savingsSubtype||"available")==="available"?"var(--green)":"var(--text-muted)", fontSize:12, fontWeight:600 }}>✓ Disponible</button>
+              <button onClick={()=>store.updateAccount(acc.id,{savingsSubtype:"blocked"})}
+                style={{ padding:"8px", borderRadius:8, border:"1px solid", borderColor:acc.savingsSubtype==="blocked"?"var(--red)":"var(--border)", background:acc.savingsSubtype==="blocked"?"var(--red-dim)":"var(--bg)", color:acc.savingsSubtype==="blocked"?"var(--red)":"var(--text-muted)", fontSize:12, fontWeight:600 }}>🔒 Bloquée</button>
+            </div>
+          )}
           {/* Solde (épargne uniquement) */}
           {acc.type==="savings" && (
             <div>
@@ -1193,6 +1310,393 @@ function FormModal({ store, account, transaction, onClose }) {
           <button onClick={handleSubmit} style={{ padding:"14px", borderRadius:"var(--radius)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:16, fontWeight:700, boxShadow:"0 4px 20px rgba(201,168,76,0.35)", marginTop:4 }}>Enregistrer</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── SavingsStats ──────────────────────────────────────────────────────────
+function fmtSnapshotDate(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  const day = d.getDate();
+  return `${day===1?"1er":day} ${d.toLocaleDateString("fr-FR",{month:"long",year:"numeric"})}`;
+}
+
+function Variation({ value }) {
+  if (value === null || value === undefined) return <span style={{ color:"var(--text-sub)", fontSize:12 }}>—</span>;
+  const pos = value >= 0;
+  return (
+    <span style={{ fontSize:12, fontWeight:700, color: pos ? "var(--green)" : "var(--red)" }}>
+      {pos ? "+" : ""}{fmtEur(value)}
+    </span>
+  );
+}
+
+function SavingsSnapshotModal({ snapshot, defaults, onClose, onSave }) {
+  const isNew = !snapshot?.id;
+  const [date,        setDate]        = useState(snapshot?.date        || new Date().toISOString().split("T")[0]);
+  const [available,   setAvailable]   = useState(snapshot?.available?.toString() || defaults?.available?.toString() || "");
+  const [blocked,     setBlocked]     = useState(snapshot?.blocked?.toString()   || defaults?.blocked?.toString()   || "");
+  const [note,        setNote]        = useState(snapshot?.note        || "");
+  const [error,       setError]       = useState("");
+
+  const handleSave = () => {
+    const avail = parseFloat(available.replace(",","."));
+    const bloc  = parseFloat(blocked.replace(",","."));
+    if (isNaN(avail) || avail < 0) return setError("Épargne disponible invalide.");
+    if (isNaN(bloc)  || bloc  < 0) return setError("Épargne bloquée invalide.");
+    if (!date) return setError("Date requise.");
+    onSave({ date, available: avail, blocked: bloc, note, auto: false });
+  };
+
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.75)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+      onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="scale-in" style={{ width:"100%", maxWidth:420, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", overflow:"hidden" }}>
+        <div style={{ background:"var(--surface2)", padding:"16px 20px", borderBottom:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <p style={{ fontSize:17, fontWeight:600 }}>{isNew ? "Nouvelle entrée" : "Modifier l'entrée"}</p>
+          <button onClick={onClose} style={{ background:"transparent", border:"none", color:"var(--text-muted)", fontSize:18 }}>✕</button>
+        </div>
+        <div style={{ padding:"16px 20px", display:"flex", flexDirection:"column", gap:12 }}>
+          <Field label="Date">
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{ fontSize:14, width:"100%", colorScheme:"var(--colorscheme)", color:"var(--text)" }} />
+          </Field>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <Field label="Épargne disponible (€)">
+              <input type="number" step="0.01" value={available} onChange={e=>setAvailable(e.target.value)} placeholder="0.00" inputMode="decimal"
+                style={{ fontSize:15, width:"100%", color:"var(--green)" }} />
+            </Field>
+            <Field label="Épargne bloquée (€)">
+              <input type="number" step="0.01" value={blocked} onChange={e=>setBlocked(e.target.value)} placeholder="0.00" inputMode="decimal"
+                style={{ fontSize:15, width:"100%", color:"var(--red)" }} />
+            </Field>
+          </div>
+          <Field label="Note (optionnelle)">
+            <input value={note} onChange={e=>setNote(e.target.value)} placeholder="Ex: rebalancement, intérêts…" style={{ fontSize:14, width:"100%" }} />
+          </Field>
+          {!isNew && (
+            <div style={{ display:"flex", gap:8, padding:"10px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8 }}>
+              <span style={{ fontSize:14, flexShrink:0 }}>ℹ️</span>
+              <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
+                Cette modification ne porte que sur ce snapshot historique. Les soldes actuels de vos comptes épargne ne seront pas affectés.
+              </p>
+            </div>
+          )}
+          {error && <p style={{ color:"var(--red)", fontSize:13 }}>{error}</p>}
+          <button onClick={handleSave} style={{ padding:"13px", borderRadius:"var(--radius-sm)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:15, fontWeight:700 }}>
+            {isNew ? "Ajouter" : "Enregistrer"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MiniSparkline({ data, color, width=80, height=32 }) {
+  if (!data || data.length < 2) return null;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * width;
+    const y = height - ((v - min) / range) * (height - 4) - 2;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg width={width} height={height} style={{ display:"block" }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// ─── SavingsChart ──────────────────────────────────────────────────────────
+function SavingsChart({ rows }) {
+  const [tooltip, setTooltip] = useState(null);
+  const W = 440, H = 180, PAD = { top:16, right:16, bottom:36, left:56 };
+  const innerW = W - PAD.left - PAD.right;
+  const innerH = H - PAD.top  - PAD.bottom;
+
+  // rows are newest-first → reverse for chart (left=oldest, right=newest)
+  const sorted = [...rows].reverse();
+
+  const allVals = sorted.flatMap(r => [r.available||0, r.blocked||0, (r.available||0)+(r.blocked||0)]);
+  const minV = 0;
+  const maxV = Math.max(...allVals, 1);
+
+  const xOf = i => PAD.left + (i / Math.max(sorted.length - 1, 1)) * innerW;
+  const yOf = v => PAD.top  + innerH - ((v - minV) / (maxV - minV)) * innerH;
+
+  const makePath = (vals) => vals.map((v, i) => `${i===0?"M":"L"}${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
+  const makeArea = (vals) => {
+    const top  = vals.map((v, i) => `${i===0?"M":"L"}${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
+    const base = `L${xOf(vals.length-1).toFixed(1)},${(PAD.top+innerH).toFixed(1)} L${PAD.left.toFixed(1)},${(PAD.top+innerH).toFixed(1)} Z`;
+    return top + " " + base;
+  };
+
+  const availVals = sorted.map(r => r.available||0);
+  const blocVals  = sorted.map(r => r.blocked||0);
+  const totVals   = sorted.map(r => (r.available||0)+(r.blocked||0));
+
+  // Y-axis ticks (4 ticks)
+  const yTicks = [0,1,2,3].map(i => minV + (maxV - minV) * i / 3);
+
+  // X-axis labels: show up to 5 evenly spaced dates
+  const xLabelIdxs = sorted.length <= 5
+    ? sorted.map((_,i)=>i)
+    : [0,1,2,3,4].map(i => Math.round(i * (sorted.length-1)/4));
+
+  const handleMouseMove = (e) => {
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (W / rect.width);
+    if (mx < PAD.left || mx > W - PAD.right) { setTooltip(null); return; }
+    const ratio = (mx - PAD.left) / innerW;
+    const idx   = Math.round(ratio * (sorted.length - 1));
+    const row   = sorted[Math.max(0, Math.min(idx, sorted.length-1))];
+    const cx    = xOf(Math.max(0, Math.min(idx, sorted.length-1)));
+    setTooltip({ row, cx, idx });
+  };
+
+  return (
+    <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"14px 0 0", marginBottom:16, overflow:"hidden" }}>
+      <p style={{ fontSize:11, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", padding:"0 16px", marginBottom:8 }}>Évolution de l'épargne</p>
+      <div style={{ overflowX:"auto" }}>
+        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display:"block", minWidth:300, width:"100%" }}
+          onMouseMove={handleMouseMove} onMouseLeave={()=>setTooltip(null)}>
+          <defs>
+            <linearGradient id="gradAvail" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#4caf82" stopOpacity="0.25"/>
+              <stop offset="100%" stopColor="#4caf82" stopOpacity="0.02"/>
+            </linearGradient>
+            <linearGradient id="gradBloc" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#e05c5c" stopOpacity="0.18"/>
+              <stop offset="100%" stopColor="#e05c5c" stopOpacity="0.02"/>
+            </linearGradient>
+            <linearGradient id="gradTot" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#c9a84c" stopOpacity="0.15"/>
+              <stop offset="100%" stopColor="#c9a84c" stopOpacity="0.02"/>
+            </linearGradient>
+          </defs>
+
+          {/* Grid lines */}
+          {yTicks.map((v,i) => (
+            <g key={i}>
+              <line x1={PAD.left} x2={W-PAD.right} y1={yOf(v)} y2={yOf(v)} stroke="rgba(255,255,255,0.05)" strokeWidth="1"/>
+              <text x={PAD.left-6} y={yOf(v)+4} textAnchor="end" fontSize="9" fill="rgba(240,236,228,0.35)" fontFamily="DM Sans,sans-serif">
+                {v>=1000?`${(v/1000).toFixed(v%1000===0?0:1)}k`:Math.round(v)}
+              </text>
+            </g>
+          ))}
+
+          {/* Area fills */}
+          <path d={makeArea(totVals)}   fill="url(#gradTot)"   />
+          <path d={makeArea(availVals)} fill="url(#gradAvail)" />
+          <path d={makeArea(blocVals)}  fill="url(#gradBloc)"  />
+
+          {/* Lines */}
+          <path d={makePath(totVals)}   fill="none" stroke="#c9a84c" strokeWidth="1.5" strokeDasharray="5 3" strokeLinejoin="round" strokeLinecap="round"/>
+          <path d={makePath(availVals)} fill="none" stroke="#4caf82" strokeWidth="2"   strokeLinejoin="round" strokeLinecap="round"/>
+          <path d={makePath(blocVals)}  fill="none" stroke="#e05c5c" strokeWidth="2"   strokeLinejoin="round" strokeLinecap="round"/>
+
+          {/* X axis labels */}
+          {xLabelIdxs.map(i => {
+            const r = sorted[i];
+            if (!r) return null;
+            const d = new Date(r.date+"T00:00:00");
+            const label = `${d.getDate()}/${d.getMonth()+1}/${String(d.getFullYear()).slice(2)}`;
+            return (
+              <text key={i} x={xOf(i)} y={H-6} textAnchor="middle" fontSize="9" fill="rgba(240,236,228,0.4)" fontFamily="DM Sans,sans-serif">{label}</text>
+            );
+          })}
+
+          {/* Tooltip crosshair */}
+          {tooltip && (
+            <g>
+              <line x1={tooltip.cx} x2={tooltip.cx} y1={PAD.top} y2={PAD.top+innerH} stroke="rgba(255,255,255,0.15)" strokeWidth="1" strokeDasharray="3 3"/>
+              <circle cx={tooltip.cx} cy={yOf(availVals[tooltip.idx])} r="4" fill="#4caf82" stroke="var(--surface)" strokeWidth="1.5"/>
+              <circle cx={tooltip.cx} cy={yOf(blocVals[tooltip.idx])}  r="4" fill="#e05c5c" stroke="var(--surface)" strokeWidth="1.5"/>
+              <circle cx={tooltip.cx} cy={yOf(totVals[tooltip.idx])}   r="3" fill="#c9a84c" stroke="var(--surface)" strokeWidth="1.5"/>
+            </g>
+          )}
+        </svg>
+      </div>
+
+      {/* Tooltip info box */}
+      {tooltip ? (
+        <div style={{ padding:"10px 16px 12px", borderTop:"1px solid var(--border)", display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+          <div>
+            <p style={{ fontSize:9, color:"var(--text-sub)", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:3 }}>Disponible</p>
+            <p style={{ fontSize:14, fontWeight:700, color:"#4caf82", fontFamily:"'DM Serif Display',serif" }}>{fmtEur(tooltip.row.available||0)}</p>
+          </div>
+          <div>
+            <p style={{ fontSize:9, color:"var(--text-sub)", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:3 }}>Bloquée</p>
+            <p style={{ fontSize:14, fontWeight:700, color:"#e05c5c", fontFamily:"'DM Serif Display',serif" }}>{fmtEur(tooltip.row.blocked||0)}</p>
+          </div>
+          <div>
+            <p style={{ fontSize:9, color:"var(--text-sub)", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:3 }}>Total</p>
+            <p style={{ fontSize:14, fontWeight:700, color:"#c9a84c", fontFamily:"'DM Serif Display',serif" }}>{fmtEur((tooltip.row.available||0)+(tooltip.row.blocked||0))}</p>
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding:"8px 16px 10px", borderTop:"1px solid var(--border)" }}>
+          <p style={{ fontSize:11, color:"var(--text-sub)", textAlign:"center" }}>Survolez le graphique pour voir les détails</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SavingsStats({ store, onBack }) {
+  const [showModal,    setShowModal]    = useState(false);
+  const [editSnapshot, setEditSnapshot] = useState(null);
+  const [deleteSnap,   setDeleteSnap]   = useState(null);
+
+  const history = store.savingsHistory; // sorted desc by date
+
+  // Compute variations
+  const rows = useMemo(() => {
+    const sorted = [...history].sort((a,b) => b.date.localeCompare(a.date)); // newest first
+    return sorted.map((entry, i) => {
+      const prev = sorted[i + 1]; // older entry
+      return {
+        ...entry,
+        varAvailable: prev != null ? entry.available - prev.available : null,
+        varBlocked:   prev != null ? entry.blocked   - prev.blocked   : null,
+        total: (entry.available || 0) + (entry.blocked || 0),
+      };
+    });
+  }, [history]);
+
+  const totalAvailable = store.accounts.filter(a=>a.type==="savings"&&a.savingsSubtype!=="blocked").reduce((s,a)=>s+(a.balance||0),0);
+  const totalBlocked   = store.accounts.filter(a=>a.type==="savings"&&a.savingsSubtype==="blocked").reduce((s,a)=>s+(a.balance||0),0);
+  const totalSavings   = totalAvailable + totalBlocked;
+
+  // Sparkline data (oldest→newest)
+  const sparkAvail   = [...rows].reverse().map(r=>r.available||0);
+  const sparkBlocked = [...rows].reverse().map(r=>r.blocked||0);
+
+  const handleSaveNew = (entry) => {
+    store.addSavingsSnapshot(entry);
+    setShowModal(false);
+  };
+  const handleSaveEdit = (entry) => {
+    store.updateSavingsSnapshot(editSnapshot.id, entry);
+    setEditSnapshot(null);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"var(--bg)" }}>
+      {/* Header */}
+      <div style={{ background:"var(--header-bg)", padding:"16px 20px 20px", borderBottom:"1px solid var(--border)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:16 }}>
+          <button onClick={onBack} style={{ background:"var(--header-btn-bg)", border:"1px solid var(--header-btn-border)", borderRadius:8, padding:"6px 12px", color:"var(--header-muted)", fontSize:13, fontWeight:500 }}>← Retour</button>
+          <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:26, letterSpacing:"-0.02em", color:"var(--header-text)" }}>Statistiques épargne</p>
+        </div>
+
+        {/* Summary cards */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+          {[
+            { label:"Total épargne", value:totalSavings, color:"var(--gold)", spark: sparkAvail.map((a,i)=>a+(sparkBlocked[i]||0)) },
+            { label:"Disponible",    value:totalAvailable, color:"var(--green)", spark: sparkAvail },
+            { label:"Bloquée",       value:totalBlocked,   color:"var(--red)",   spark: sparkBlocked },
+          ].map(c=>(
+            <div key={c.label} style={{ background:"rgba(255,255,255,0.05)", borderRadius:10, padding:"10px 12px", border:"1px solid rgba(255,255,255,0.08)" }}>
+              <p style={{ fontSize:10, color:"var(--header-muted)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>{c.label}</p>
+              <p style={{ fontSize:16, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:c.color, marginBottom:4 }}>{fmtEur(c.value)}</p>
+              <MiniSparkline data={c.spark} color={c.color} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{ padding:"16px" }}>
+        {/* Add button */}
+        <button onClick={()=>setShowModal(true)} style={{ width:"100%", padding:"11px", borderRadius:"var(--radius-sm)", background:"var(--gold-dim)", border:"1px dashed var(--gold)", color:"var(--gold)", fontSize:13, fontWeight:600, marginBottom:16 }}>
+          + Ajouter une entrée manuellement
+        </button>
+
+        {/* Chart */}
+        {rows.length >= 2 && (
+          <SavingsChart rows={rows} />
+        )}
+
+        {/* Legend */}
+        <div style={{ display:"flex", gap:12, marginBottom:12, flexWrap:"wrap" }}>
+          <span style={{ fontSize:11, color:"var(--green)", fontWeight:600, display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10,height:10,borderRadius:2,background:"var(--green)",display:"inline-block" }}/>Disponible</span>
+          <span style={{ fontSize:11, color:"var(--red)", fontWeight:600, display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10,height:10,borderRadius:2,background:"var(--red)",display:"inline-block" }}/>Bloquée</span>
+          <span style={{ fontSize:11, color:"var(--gold)", fontWeight:600, display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10,height:10,borderRadius:2,background:"var(--gold)",display:"inline-block" }}/>Total</span>
+          <span style={{ fontSize:11, color:"var(--text-sub)", fontWeight:600, display:"flex", alignItems:"center", gap:4 }}><span style={{ fontSize:10 }}>🤖</span>Auto</span>
+        </div>
+
+        {/* Table / Cards */}
+        {rows.length === 0 ? (
+          <div style={{ textAlign:"center", padding:"60px 20px", color:"var(--text-muted)" }}>
+            <p style={{ fontSize:36, marginBottom:12 }}>📈</p>
+            <p style={{ fontSize:15, fontWeight:500, marginBottom:6 }}>Aucune entrée pour l'instant</p>
+            <p style={{ fontSize:13 }}>Les entrées sont créées automatiquement le 1er et le 15 de chaque mois, ou vous pouvez en ajouter manuellement.</p>
+          </div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {rows.map((row, i) => (
+              <div key={row.id} className="fade-up" style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden", animationDelay:`${i*0.03}s` }}>
+                {/* Date + actions header */}
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px", background:"var(--surface2)", borderBottom:"1px solid var(--border)" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <span style={{ fontFamily:"'DM Serif Display',serif", fontSize:15, fontWeight:600, color:"var(--gold)" }}>{fmtSnapshotDate(row.date)}</span>
+                    {row.auto && <span style={{ fontSize:10, padding:"2px 6px", borderRadius:4, background:"var(--gold-dim)", color:"var(--gold)", fontWeight:600 }}>🤖 Auto</span>}
+                    {row.note && <span style={{ fontSize:11, color:"var(--text-muted)", fontStyle:"italic" }}>{row.note}</span>}
+                  </div>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button onClick={()=>setEditSnapshot(row)} style={{ background:"var(--gold-dim)", border:"none", borderRadius:6, width:24,height:24, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--gold)", fontSize:12 }}>✎</button>
+                    <button onClick={()=>setDeleteSnap(row)} style={{ background:"var(--red-dim)", border:"none", borderRadius:6, width:24,height:24, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--red)", fontSize:12 }}>✕</button>
+                  </div>
+                </div>
+
+                {/* 2-column data */}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:0 }}>
+                  {/* Available */}
+                  <div style={{ padding:"12px 14px", borderRight:"1px solid var(--border)" }}>
+                    <p style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Disponible</p>
+                    <p style={{ fontSize:18, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--green)", marginBottom:4 }}>{fmtEur(row.available||0)}</p>
+                    <Variation value={row.varAvailable} />
+                  </div>
+                  {/* Blocked */}
+                  <div style={{ padding:"12px 14px" }}>
+                    <p style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>Bloquée</p>
+                    <p style={{ fontSize:18, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--red)", marginBottom:4 }}>{fmtEur(row.blocked||0)}</p>
+                    <Variation value={row.varBlocked} />
+                  </div>
+                </div>
+
+                {/* Total */}
+                <div style={{ padding:"8px 14px", borderTop:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center", background:"rgba(0,0,0,0.02)" }}>
+                  <span style={{ fontSize:11, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em" }}>Total épargne</span>
+                  <span style={{ fontSize:15, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--gold)" }}>{fmtEur(row.total)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Modals */}
+      {showModal    && <SavingsSnapshotModal defaults={{ available: totalAvailable, blocked: totalBlocked }} onClose={()=>setShowModal(false)}    onSave={handleSaveNew} />}
+      {editSnapshot && <SavingsSnapshotModal snapshot={editSnapshot} onClose={()=>setEditSnapshot(null)} onSave={handleSaveEdit} />}
+      {deleteSnap   && (
+        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={e=>e.target===e.currentTarget&&setDeleteSnap(null)}>
+          <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
+            <p style={{ fontSize:18, fontWeight:600, marginBottom:12 }}>Supprimer cette entrée</p>
+            <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
+              Supprimer l'entrée du <strong>{fmtSnapshotDate(deleteSnap.date)}</strong> ? Cette action est irréversible.
+            </p>
+            <div style={{ display:"flex", gap:10 }}>
+              <button onClick={()=>setDeleteSnap(null)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
+              <button onClick={()=>{store.removeSavingsSnapshot(deleteSnap.id);setDeleteSnap(null);}} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
