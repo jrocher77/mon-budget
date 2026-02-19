@@ -83,6 +83,7 @@
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+    .scroll-row::-webkit-scrollbar { display: none; }
     input, select, textarea { font-family: 'DM Sans', sans-serif; color: var(--text); background: transparent; border: none; outline: none; }
     input::placeholder, textarea::placeholder { color: var(--text-muted); }
     button { cursor: pointer; font-family: 'DM Sans', sans-serif; }
@@ -136,9 +137,8 @@ const SAMPLE_TX = [
 ];
 
 // ─── Demo data ─────────────────────────────────────────────────────────────
-// Credentials démo obfusqués en Base64 (non stockés en clair)
-const DEMO_EMAIL    = atob("ZGVtb0Btb25idWRnZXQuZnI=");
-const DEMO_PASSWORD = atob("RGVtbzEyMzQh");
+const DEMO_EMAIL    = "demo@monbudget.fr";
+const DEMO_PASSWORD = "Demo1234!";
 const DEMO_ACCOUNTS = [
   { id:"da1", name:"Compte courant",   type:"checking", balance:0, cardName:"Visa Premier" },
   { id:"da2", name:"Compte joint",     type:"checking", balance:0 },
@@ -822,7 +822,7 @@ function MonthTabs({ months, selected, onSelect }) {
   return (
     <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:2 }}>
       {months.map(m => (
-        <button key={m} onClick={()=>onSelect(m)} style={{ flexShrink:0, padding:"5px 13px", borderRadius:20, border:"1px solid", borderColor:selected===m?"var(--gold)":"var(--header-btn-border)", background:selected===m?"rgba(201,168,76,0.2)":"var(--header-btn-bg)", color:selected===m?"#e8c96a":"var(--header-muted)", fontSize:13, fontWeight:500, transition:"all 0.2s" }}>
+        <button key={m} onClick={()=>onSelect(m)} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"1px solid", borderColor:selected===m?"var(--gold)":"var(--border)", background:selected===m?"var(--gold-dim)":"var(--surface2)", color:selected===m?"var(--gold)":"var(--text-muted)", fontSize:13, fontWeight:600, transition:"all 0.2s" }}>
           {new Date(m+"-02").toLocaleDateString("fr-FR",{month:"short",year:"2-digit"})}
         </button>
       ))}
@@ -945,7 +945,7 @@ function CardPanel({ account, sel, cardTxM, cardTotal, cardDebitDate, isDebitNex
               {cardDebitDate ? (
                 <span style={{ fontSize:12, color: isDebitNextMonth ? "var(--red)" : "var(--text-muted)" }}>
                   Prélèvement prévu le <strong style={{ color: isDebitNextMonth ? "var(--red)" : "var(--text)" }}>{fmtDate(cardDebitDate)}</strong>
-                  {isDebitNextMonth && ` — en ${debitMonthName}`}
+
                 </span>
               ) : (
                 <span style={{ fontSize:12, color:"var(--text-sub)", fontStyle:"italic" }}>Date de prélèvement non définie</span>
@@ -1226,8 +1226,11 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
   return (
     <div>
-      <PageHeader title="Mon Budget"><MonthTabs months={months} selected={sel} onSelect={setSel} /></PageHeader>
+      <PageHeader title="Mon Budget" />
       <div style={{ padding:"16px", display:"flex", flexDirection:"column", gap:14 }}>
+
+        {/* Month tabs */}
+        <MonthTabs months={months} selected={sel} onSelect={setSel} />
 
         {/* Account tabs */}
         <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:2 }}>
@@ -1364,7 +1367,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
           </div>
           {txM.length===0 ? <EmptyState text="Aucune transaction ce mois-ci" />
             : <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden" }}>
-                {txM.slice(0,5).map((tx,i)=>(
+                {txM.slice(0,15).map((tx,i)=>(
                   <div key={tx.id}>
                     {i>0&&<div style={{ height:1, background:"var(--border)", margin:"0 16px" }} />}
                     <TxRow tx={tx} deletable clicked={clickedTxId===tx.id} onToggleClicked={id=>setClickedTxId(clickedTxId===id?null:id)} onDelete={()=>setDeletingTx(tx)} onEdit={()=>setEditingTx(tx)} onTogglePointed={()=>store.togglePointed(tx.id)} delay={i*0.04} />
@@ -1403,19 +1406,21 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
 // ─── Transactions ──────────────────────────────────────────────────────────
 function Transactions({ store, onAdd }) {
-  const [search,       setSearch]      = useState("");
-  const [filterType,   setFilter]      = useState("all");
-  const [editingTx,    setEditingTx]   = useState(null);
-  const [deletingTx,   setDeletingTx]  = useState(null);
-  const [clickedTxId,  setClickedTxId] = useState(null);
+  const [search,        setSearch]      = useState("");
+  const [filterType,    setFilter]      = useState("all");
+  const [filterAccount, setFilterAcct]  = useState("all");
+  const [editingTx,     setEditingTx]   = useState(null);
+  const [deletingTx,    setDeletingTx]  = useState(null);
+  const [clickedTxId,   setClickedTxId] = useState(null);
 
   const filtered = useMemo(()=>store.transactions.filter(t=>{
     const ms=t.title.toLowerCase().includes(search.toLowerCase());
     if (!ms) return false;
+    if (filterAccount !== "all" && t.accountId !== filterAccount) return false;
     if (filterType==="card") return !!t.isCard;
     if (filterType==="all") return true;
     return t.type===filterType && !t.isCard;
-  }),[store.transactions,search,filterType]);
+  }),[store.transactions,search,filterType,filterAccount]);
 
   const grouped = useMemo(()=>{
     const map={};
@@ -1425,25 +1430,42 @@ function Transactions({ store, onAdd }) {
 
   // Show card filter button only if any account has a card
   const hasAnyCard = store.accounts.some(a => a.cardName);
+  const checkingAccounts = store.accounts.filter(a => a.type === "checking");
 
   return (
     <div>
-      <PageHeader title="Transactions" onAdd={()=>onAdd(null)}>
-        <div style={{ display:"flex", alignItems:"center", gap:8, background:"var(--header-input-bg)", border:"1px solid var(--header-input-border)", borderRadius:"var(--radius-sm)", padding:"9px 14px", marginBottom:12 }}>
-          <span style={{ color:"var(--header-muted)", fontSize:16 }}>⌕</span>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Rechercher…" style={{ flex:1, fontSize:14, color:"var(--header-text)" }} />
-        </div>
-        <div style={{ display:"flex", gap:6 }}>
+      <PageHeader title="Transactions" />
+      <div style={{ padding:"12px 16px 0" }}>
+        {/* Type filters */}
+        <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:2, marginBottom:8 }}>
           {[["all","Tout"],["expense","Dépenses"],["income","Revenus"], ...(hasAnyCard ? [["card","🃏 Carte"]] : [])].map(([v,l])=>(
-            <button key={v} onClick={()=>setFilter(v)} style={{ padding:"5px 13px", borderRadius:20, border:"1px solid", borderColor:filterType===v?"var(--gold)":"var(--header-btn-border)", background:filterType===v?"rgba(201,168,76,0.2)":"var(--header-btn-bg)", color:filterType===v?"#e8c96a":"var(--header-muted)", fontSize:12, fontWeight:500, transition:"all 0.2s" }}>{l}</button>
+            <button key={v} onClick={()=>setFilter(v)} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"1px solid", borderColor:filterType===v?"var(--gold)":"var(--border)", background:filterType===v?"var(--gold-dim)":"var(--surface2)", color:filterType===v?"var(--gold)":"var(--text-muted)", fontSize:13, fontWeight:600, transition:"all 0.2s" }}>{l}</button>
           ))}
         </div>
-      </PageHeader>
+        {/* Account filters */}
+        {checkingAccounts.length > 1 && (
+          <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:2, marginBottom:8 }}>
+            <button onClick={()=>setFilterAcct("all")} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"1px solid", borderColor:filterAccount==="all"?"var(--gold)":"var(--border)", background:filterAccount==="all"?"var(--gold-dim)":"var(--surface2)", color:filterAccount==="all"?"var(--gold)":"var(--text-muted)", fontSize:13, fontWeight:600, transition:"all 0.2s" }}>📊 Tous les comptes</button>
+            {checkingAccounts.map(acc=>(
+              <button key={acc.id} onClick={()=>setFilterAcct(acc.id)} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"1px solid", borderColor:filterAccount===acc.id?"var(--gold)":"var(--border)", background:filterAccount===acc.id?"var(--gold-dim)":"var(--surface2)", color:filterAccount===acc.id?"var(--gold)":"var(--text-muted)", fontSize:13, fontWeight:600, transition:"all 0.2s" }}>💳 {acc.name}</button>
+            ))}
+          </div>
+        )}
+        {/* Search bar */}
+        <div style={{ display:"flex", alignItems:"center", gap:8, background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", padding:"9px 14px", marginBottom:0 }}>
+          <span style={{ color:"var(--text-muted)", fontSize:16 }}>⌕</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Rechercher..." style={{ flex:1, fontSize:14, color:"var(--text)", background:"transparent" }} />
+          {search && <button onClick={()=>setSearch("")} style={{ background:"none", border:"none", color:"var(--text-muted)", fontSize:16, cursor:"pointer", padding:0, lineHeight:1 }}>✕</button>}
+        </div>
+      </div>
       <div style={{ padding:"12px 16px 16px" }}>
         {grouped.length===0 ? <EmptyState text="Aucune transaction trouvée" />
-          : grouped.map(([date,txs])=>(
+          : grouped.map(([date,txs], gi)=>(
             <div key={date} className="slide-in">
-              <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", margin:"14px 0 6px 4px" }}>{fmtDate(date)}</p>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", margin:"14px 0 6px 4px" }}>
+                <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em" }}>{fmtDate(date)}</p>
+                {gi===0 && <button onClick={()=>onAdd(filterAccount==="all" ? null : filterAccount)} style={{ background:"none", border:"none", color:"var(--gold)", fontSize:13, fontWeight:600, padding:0, cursor:"pointer" }}>+ Ajouter</button>}
+              </div>
               <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden" }}>
                 {txs.map((tx,i)=>(
                   <div key={tx.id}>
@@ -2381,30 +2403,29 @@ function SavingsStats({ store, onBack }) {
   return (
     <div style={{ minHeight:"100vh", background:"var(--bg)" }}>
       {/* Header */}
-      <div style={{ background:"var(--header-bg)", padding:"16px 20px 20px", borderBottom:"1px solid var(--border)" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:16 }}>
+      <div style={{ background:"var(--header-bg)", padding:"16px 20px", borderBottom:"1px solid var(--border)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <button onClick={onBack} style={{ background:"var(--header-btn-bg)", border:"1px solid var(--header-btn-border)", borderRadius:8, padding:"6px 12px", color:"var(--header-muted)", fontSize:13, fontWeight:500 }}>← Retour</button>
           <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:26, letterSpacing:"-0.02em", color:"var(--header-text)" }}>Statistiques épargne</p>
-        </div>
-
-        {/* Summary cards */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
-          {[
-            { label:"Total épargne", value:totalSavings, color:"var(--gold)", spark: sparkAvail.map((a,i)=>a+(sparkBlocked[i]||0)) },
-            { label:"Disponible",    value:totalAvailable, color:"var(--green)", spark: sparkAvail },
-            { label:"Bloquée",       value:totalBlocked,   color:"var(--red)",   spark: sparkBlocked },
-          ].map(c=>(
-            <div key={c.label} style={{ background:"rgba(255,255,255,0.05)", borderRadius:10, padding:"10px 12px", border:"1px solid rgba(255,255,255,0.08)" }}>
-              <p style={{ fontSize:10, color:"var(--header-muted)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>{c.label}</p>
-              <p style={{ fontSize:16, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:c.color, marginBottom:4 }}>{fmtEur(c.value)}</p>
-              <MiniSparkline data={c.spark} color={c.color} />
-            </div>
-          ))}
         </div>
       </div>
 
       {/* Content */}
       <div style={{ padding:"16px" }}>
+        {/* Summary cards */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:16 }}>
+          {[
+            { label:"Total épargne", value:totalSavings, color:"var(--gold)", spark: sparkAvail.map((a,i)=>a+(sparkBlocked[i]||0)) },
+            { label:"Disponible",    value:totalAvailable, color:"var(--green)", spark: sparkAvail },
+            { label:"Bloquée",       value:totalBlocked,   color:"var(--red)",   spark: sparkBlocked },
+          ].map(c=>(
+            <div key={c.label} style={{ background:"var(--surface)", borderRadius:10, padding:"10px 12px", border:"1px solid var(--border)" }}>
+              <p style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>{c.label}</p>
+              <p style={{ fontSize:16, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:c.color, marginBottom:4 }}>{fmtEur(c.value)}</p>
+              <MiniSparkline data={c.spark} color={c.color} />
+            </div>
+          ))}
+        </div>
         {/* Add button */}
         <button onClick={()=>setShowModal(true)} style={{ width:"100%", padding:"11px", borderRadius:"var(--radius-sm)", background:"var(--gold-dim)", border:"1px dashed var(--gold)", color:"var(--gold)", fontSize:13, fontWeight:600, marginBottom:16 }}>
           + Ajouter une entrée manuellement
