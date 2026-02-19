@@ -134,6 +134,55 @@ const SAMPLE_TX = [
   { id:"s5",  title:"Netflix",                amount:17.99,  type:"expense", date:dBack(4),  accountId: DEFAULT_ACCOUNTS[0].id, pointed:false },
 ];
 
+// ─── Demo data ─────────────────────────────────────────────────────────────
+const DEMO_EMAIL    = "demo@monbudget.fr";
+const DEMO_PASSWORD = "Demo1234!";
+const DEMO_ACCOUNTS = [
+  { id:"da1", name:"Compte courant",   type:"checking", balance:0,       savingsSubtype:"available" },
+  { id:"da2", name:"Compte joint",     type:"checking", balance:0,       savingsSubtype:"available" },
+  { id:"da3", name:"Livret A",         type:"savings",  balance:8500,    savingsSubtype:"available" },
+  { id:"da4", name:"PEL",              type:"savings",  balance:24000,   savingsSubtype:"blocked"   },
+  { id:"da5", name:"Assurance vie",    type:"savings",  balance:15750,   savingsSubtype:"blocked"   },
+];
+const DEMO_TX = [
+  // Mois courant — da1
+  { id:"dt01", title:"Salaire",          amount:3200,   type:"income",  date:dBack(2),  accountId:"da1", pointed:true  },
+  { id:"dt02", title:"Loyer",            amount:1100,   type:"expense", date:dBack(3),  accountId:"da1", pointed:true  },
+  { id:"dt03", title:"Électricité",      amount:68,     type:"expense", date:dBack(5),  accountId:"da1", pointed:false },
+  { id:"dt04", title:"Courses Leclerc",  amount:143.20, type:"expense", date:dBack(4),  accountId:"da1", pointed:true  },
+  { id:"dt05", title:"Courses Lidl",     amount:54.80,  type:"expense", date:dBack(6),  accountId:"da1", pointed:false },
+  { id:"dt06", title:"Netflix",          amount:17.99,  type:"expense", date:dBack(7),  accountId:"da1", pointed:true  },
+  { id:"dt07", title:"Spotify",          amount:10.99,  type:"expense", date:dBack(7),  accountId:"da1", pointed:false },
+  { id:"dt08", title:"Restaurant",       amount:62.50,  type:"expense", date:dBack(8),  accountId:"da1", pointed:false },
+  { id:"dt09", title:"Essence",          amount:85,     type:"expense", date:dBack(9),  accountId:"da1", pointed:true  },
+  { id:"dt10", title:"Pharmacie",        amount:23.40,  type:"expense", date:dBack(10), accountId:"da1", pointed:false },
+  { id:"dt11", title:"Virement épargne", amount:300,    type:"expense", date:dBack(3),  accountId:"da1", pointed:true  },
+  // Mois courant — da2
+  { id:"dt12", title:"Salaire conjoint", amount:2400,   type:"income",  date:dBack(2),  accountId:"da2", pointed:true  },
+  { id:"dt13", title:"Crèche",           amount:480,    type:"expense", date:dBack(4),  accountId:"da2", pointed:true  },
+  { id:"dt14", title:"Activités enfants",amount:95,     type:"expense", date:dBack(6),  accountId:"da2", pointed:false },
+  { id:"dt15", title:"Abonnement salle", amount:29.99,  type:"expense", date:dBack(8),  accountId:"da2", pointed:false },
+  { id:"dt16", title:"Remboursement CB", amount:120,    type:"income",  date:dBack(10), accountId:"da2", pointed:false },
+  // Mois précédent — da1
+  { id:"dt17", title:"Salaire",          amount:3200,   type:"income",  date:dBack(33), accountId:"da1", pointed:true  },
+  { id:"dt18", title:"Loyer",            amount:1100,   type:"expense", date:dBack(34), accountId:"da1", pointed:true  },
+  { id:"dt19", title:"Courses",          amount:198.60, type:"expense", date:dBack(35), accountId:"da1", pointed:true  },
+  { id:"dt20", title:"EDF",              amount:72,     type:"expense", date:dBack(36), accountId:"da1", pointed:true  },
+  { id:"dt21", title:"Mutuelle",         amount:135,    type:"expense", date:dBack(37), accountId:"da1", pointed:true  },
+  { id:"dt22", title:"Prime",            amount:500,    type:"income",  date:dBack(38), accountId:"da1", pointed:true  },
+  // Mois précédent — da2
+  { id:"dt23", title:"Salaire conjoint", amount:2400,   type:"income",  date:dBack(33), accountId:"da2", pointed:true  },
+  { id:"dt24", title:"Crèche",           amount:480,    type:"expense", date:dBack(34), accountId:"da2", pointed:true  },
+  { id:"dt25", title:"Vacances",         amount:640,    type:"expense", date:dBack(36), accountId:"da2", pointed:true  },
+].map(t => ({ ...t, pointed: t.pointed || false }));
+const DEMO_SAVINGS_HISTORY = [
+  { id:"dsh1", date: (() => { const d=new Date(); d.setMonth(d.getMonth()-2); d.setDate(1);  return d.toISOString().split("T")[0]; })(), available:7800,  blocked:37500, auto:true,  note:"" },
+  { id:"dsh2", date: (() => { const d=new Date(); d.setMonth(d.getMonth()-2); d.setDate(15); return d.toISOString().split("T")[0]; })(), available:8100,  blocked:37500, auto:true,  note:"" },
+  { id:"dsh3", date: (() => { const d=new Date(); d.setMonth(d.getMonth()-1); d.setDate(1);  return d.toISOString().split("T")[0]; })(), available:8300,  blocked:39000, auto:true,  note:"Versement PEL" },
+  { id:"dsh4", date: (() => { const d=new Date(); d.setMonth(d.getMonth()-1); d.setDate(15); return d.toISOString().split("T")[0]; })(), available:8500,  blocked:39000, auto:true,  note:"" },
+  { id:"dsh5", date: (() => { const d=new Date(); d.setDate(1); return d.toISOString().split("T")[0]; })(),                             available:8500,  blocked:39750, auto:true,  note:"Intérêts assurance vie" },
+];
+
 // ─── Firebase helpers ──────────────────────────────────────────────────────
 const fb = () => window._fb;
 
@@ -155,7 +204,8 @@ const ThemeCtx  = createContext({ theme:"dark", toggle:()=>{} });
 const useTheme  = () => useContext(ThemeCtx);
 
 // ─── useStore ──────────────────────────────────────────────────────────────
-function useStore(uid) {
+function useStore(uid, email) {
+  const isDemo = email === DEMO_EMAIL;
   const [ready,        setReady]       = useState(false);
   const [transactions, setTx]          = useState([]);
   const [templates,    setTpl]         = useState(DEFAULT_TPL);
@@ -194,8 +244,13 @@ function useStore(uid) {
         snapActiveRef.current = data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE;
       } else {
         // First time: save sample data
-        setTx(SAMPLE_TX);
-        fbSave(uid, { transactions:SAMPLE_TX, templates:DEFAULT_TPL, accounts:DEFAULT_ACCOUNTS, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:DEFAULT_SAVINGS_HISTORY, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE });
+        const initTx      = isDemo ? DEMO_TX      : SAMPLE_TX;
+        const initAccts   = isDemo ? DEMO_ACCOUNTS : DEFAULT_ACCOUNTS;
+        const initHistory = isDemo ? DEMO_SAVINGS_HISTORY : DEFAULT_SAVINGS_HISTORY;
+        setTx(initTx);
+        setAccounts(initAccts);
+        setSavingsHistory(initHistory);
+        fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE });
       }
       loadedRef.current = true;
       setReady(true);
@@ -270,7 +325,7 @@ function useStore(uid) {
     }), ...p]);
   };
 
-  const addAccount    = ()          => { if (accounts.length>=10) return; setAccounts(p=>[...p,{id:genId(),name:`Nouveau compte ${p.length+1}`,type:"checking",balance:0}]); };
+  const addAccount    = ()          => { if (accounts.length>=15) return; setAccounts(p=>[...p,{id:genId(),name:`Nouveau compte ${p.length+1}`,type:"checking",balance:0}]); };
   const removeAccount = id => {
     if (accounts.length<=1) return;
     setAccounts(p => p.filter(a => a.id !== id));
@@ -339,7 +394,8 @@ function useStore(uid) {
     accounts, addAccount, removeAccount, updateAccount, moveAccount,
     cleanupDay, updateCleanupDay, autoCleanup, updateAutoCleanup, cleanupMonth,
     savingsHistory, addSavingsSnapshot, updateSavingsSnapshot, removeSavingsSnapshot,
-    savingsSnapDays, setSavingsSnapDays, savingsSnapActive, setSavingsSnapActive };
+    savingsSnapDays, setSavingsSnapDays, savingsSnapActive, setSavingsSnapActive,
+    isDemo };
 }
 
 // ─── Login Screen ──────────────────────────────────────────────────────────
@@ -348,19 +404,25 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState("");
   const [error,    setError]    = useState("");
   const [loading,  setLoading]  = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError(""); setLoading(true);
+  const doLogin = async (credentials) => {
+    const em = credentials?.email || email;
+    const pw = credentials?.password || password;
+    setError("");
+    if (credentials) setDemoLoading(true); else setLoading(true);
     try {
       const { auth, signInWithEmailAndPassword } = fb();
-      await signInWithEmailAndPassword(auth, email, password);
+      await signInWithEmailAndPassword(auth, em, pw);
     } catch (err) {
       setError("Email ou mot de passe incorrect.");
     } finally {
-      setLoading(false);
+      setLoading(false); setDemoLoading(false);
     }
   };
+
+  const handleSubmit = () => doLogin();
+  const handleDemo   = () => doLogin({ email: DEMO_EMAIL, password: DEMO_PASSWORD });
 
   return (
     <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:24, background:"var(--bg)" }}>
@@ -380,17 +442,35 @@ function LoginScreen({ onLogin }) {
             <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.07em", display:"block", marginBottom:6 }}>Mot de passe</label>
             <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
               placeholder="••••••••" autoComplete="current-password"
-              onKeyDown={e=>e.key==="Enter"&&handleSubmit(e)}
+              onKeyDown={e=>e.key==="Enter"&&handleSubmit()}
               style={{ width:"100%", fontSize:15, padding:"10px 14px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }} />
           </div>
           {error && <p style={{ fontSize:13, color:"var(--red)", textAlign:"center" }}>{error}</p>}
-          <button onClick={handleSubmit} disabled={loading} style={{
+          <button onClick={handleSubmit} disabled={loading || demoLoading} style={{
             padding:"13px", borderRadius:"var(--radius-sm)",
             background: loading ? "var(--surface3)" : "linear-gradient(135deg, var(--gold-light), var(--gold))",
             border:"none", color:"#0e0f13", fontSize:15, fontWeight:700,
             opacity: loading ? 0.7 : 1,
           }}>
             {loading ? "Connexion…" : "Se connecter"}
+          </button>
+
+          {/* Separator */}
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ flex:1, height:1, background:"var(--border)" }} />
+            <span style={{ fontSize:11, color:"var(--text-sub)", fontWeight:500 }}>ou</span>
+            <div style={{ flex:1, height:1, background:"var(--border)" }} />
+          </div>
+
+          {/* Demo button */}
+          <button onClick={handleDemo} disabled={loading || demoLoading} style={{
+            padding:"12px", borderRadius:"var(--radius-sm)",
+            background:"var(--surface2)", border:"1px solid var(--border)",
+            color:"var(--text-muted)", fontSize:14, fontWeight:600,
+            opacity: demoLoading ? 0.7 : 1, display:"flex", alignItems:"center", justifyContent:"center", gap:8
+          }}>
+            <span style={{ fontSize:16 }}>👀</span>
+            {demoLoading ? "Chargement…" : "Voir la démo"}
           </button>
         </div>
       </div>
@@ -416,12 +496,57 @@ function App() {
   const [formAccount,setFormAcc] = useState(null);
   const [theme,      setTheme]   = useState(() => localStorage.getItem("budget_theme") || "dark");
 
-  const store = useStore(user?.uid);
+  const store = useStore(user?.uid, user?.email);
+
+  const INACTIVITY_LIMIT = 8 * 60 * 60 * 1000; // 8 hours in ms
+  const ACTIVITY_KEY     = "budget_last_activity";
+
+  // Update last activity timestamp on any user interaction
+  useEffect(() => {
+    const touch = () => localStorage.setItem(ACTIVITY_KEY, Date.now().toString());
+    const events = ["mousedown", "keydown", "touchstart", "scroll", "click"];
+    events.forEach(e => window.addEventListener(e, touch, { passive: true }));
+    return () => events.forEach(e => window.removeEventListener(e, touch));
+  }, []);
 
   useEffect(() => {
-    const { auth, onAuthStateChanged } = fb();
-    return onAuthStateChanged(auth, u => setUser(u || null));
+    const { auth, onAuthStateChanged, signOut } = fb();
+    return onAuthStateChanged(auth, async u => {
+      if (u) {
+        // Check inactivity on auth state change (app open / tab focus)
+        const last = parseInt(localStorage.getItem(ACTIVITY_KEY) || "0", 10);
+        const elapsed = Date.now() - last;
+        if (last > 0 && elapsed > INACTIVITY_LIMIT) {
+          await signOut(auth);
+          localStorage.removeItem(ACTIVITY_KEY);
+          return;
+        }
+        // Record activity on fresh login
+        if (!last) localStorage.setItem(ACTIVITY_KEY, Date.now().toString());
+      } else {
+        localStorage.removeItem(ACTIVITY_KEY);
+      }
+      setUser(u || null);
+    });
   }, []);
+
+  // Also check inactivity when tab regains focus
+  useEffect(() => {
+    const onFocus = async () => {
+      if (!user) return;
+      const last = parseInt(localStorage.getItem(ACTIVITY_KEY) || "0", 10);
+      if (last > 0 && Date.now() - last > INACTIVITY_LIMIT) {
+        const { auth, signOut } = fb();
+        await signOut(auth);
+        localStorage.removeItem(ACTIVITY_KEY);
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") onFocus(); });
+    return () => {
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [user]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -442,6 +567,12 @@ function App() {
   return (
     <ThemeCtx.Provider value={{ theme, toggle:()=>setTheme(t=>t==="dark"?"light":"dark") }}>
       <div style={{ display:"flex", flexDirection:"column", height:"100vh", maxWidth:480, margin:"0 auto", background:"var(--bg)", transition:"background 0.3s" }}>
+        {store.isDemo && (
+          <div style={{ background:"linear-gradient(90deg,#c9a84c,#e8c96a)", padding:"8px 16px", display:"flex", alignItems:"center", justifyContent:"center", gap:8, zIndex:50 }}>
+            <span style={{ fontSize:14 }}>👀</span>
+            <p style={{ fontSize:12, fontWeight:700, color:"#0e0f13", letterSpacing:"0.04em" }}>MODE DÉMO — Les modifications sont visibles par tous les visiteurs</p>
+          </div>
+        )}
         <div style={{ flex:1, overflowY:"auto", paddingBottom:80 }}>
           {tab==="dashboard"     && <Dashboard    store={store} onAdd={handleOpenForm} onGoSavings={()=>setTab("savingsStats")} />}
           {tab==="transactions"  && <Transactions store={store} onAdd={handleOpenForm} />}
@@ -475,11 +606,31 @@ function TabBar({ tab, setTab }) {
 }
 
 // ─── PageHeader ────────────────────────────────────────────────────────────
-function PageHeader({ title, children }) {
+function PageHeader({ title, onAdd, children }) {
   return (
     <div style={{ background:"var(--header-bg)", padding:"16px 20px 18px", borderBottom:"1px solid var(--border)" }}>
       <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:28, letterSpacing:"-0.02em", color:"var(--header-text)", marginBottom:children?14:0 }}>{title}</p>
-      {children}
+      {onAdd && !children && (
+        <button onClick={onAdd}
+          style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:20,
+            background:"var(--gold-dim)", border:"1px solid var(--gold)",
+            color:"var(--gold)", fontSize:13, fontWeight:600, marginTop:12 }}>
+          <span style={{ fontSize:16, lineHeight:1 }}>＋</span> Ajouter
+        </button>
+      )}
+      {children && (
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ flex:1 }}>{children}</div>
+          {onAdd && (
+            <button onClick={onAdd}
+              style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:20,
+                background:"var(--gold-dim)", border:"1px solid var(--gold)",
+                color:"var(--gold)", fontSize:13, fontWeight:600, flexShrink:0, alignSelf:"flex-end" }}>
+              <span style={{ fontSize:16, lineHeight:1 }}>＋</span> Ajouter
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -552,6 +703,60 @@ function DeleteModal({ tx, onCancel, onConfirm }) {
 }
 
 // ─── Dashboard ─────────────────────────────────────────────────────────────
+function SavingsBalanceRow({ account, balance, store }) {
+  const [editing, setEditing] = useState(false);
+  const [draft,   setDraft]   = useState("");
+  const inputRef = useRef(null);
+
+  const startEdit = () => {
+    setDraft((account.balance || 0).toString());
+    setEditing(true);
+    setTimeout(() => { inputRef.current?.select(); }, 0);
+  };
+
+  const commit = () => {
+    const val = parseFloat(draft.replace(",", "."));
+    if (!isNaN(val)) store.updateAccount(account.id, { balance: val });
+    setEditing(false);
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === "Enter")  commit();
+    if (e.key === "Escape") setEditing(false);
+  };
+
+  return (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:"var(--surface2)", borderRadius:"var(--radius-sm)" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <span style={{ fontSize:13, fontWeight:500 }}>{account.name}</span>
+        <span style={{ fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:6, background:account.savingsSubtype==="blocked"?"var(--red-dim)":"var(--green-dim)", color:account.savingsSubtype==="blocked"?"var(--red)":"var(--green)" }}>
+          {account.savingsSubtype==="blocked"?"🔒 Bloquée":"✓ Disponible"}
+        </span>
+      </div>
+      {editing ? (
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <input ref={inputRef} type="number" step="0.01" value={draft} onChange={e=>setDraft(e.target.value)} onBlur={commit} onKeyDown={onKeyDown}
+            inputMode="decimal"
+            style={{ width:110, fontSize:14, fontWeight:700, fontFamily:"'DM Serif Display',serif", textAlign:"right",
+              padding:"3px 8px", borderRadius:6, border:"1px solid var(--gold)", background:"var(--bg)", color:"var(--gold)",
+              outline:"none" }} />
+          <button onMouseDown={e=>{e.preventDefault();commit();}}
+            style={{ background:"var(--gold-dim)", border:"none", borderRadius:6, width:24, height:24, color:"var(--gold)", fontSize:13, flexShrink:0, cursor:"pointer" }}>✓</button>
+        </div>
+      ) : (
+        <span onClick={startEdit} title="Cliquer pour modifier"
+          style={{ fontSize:14, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:balance>=0?"var(--green)":"var(--red)",
+            cursor:"pointer", borderBottom:"1px dashed", borderColor:"transparent",
+            transition:"border-color 0.15s" }}
+          onMouseEnter={e=>e.currentTarget.style.borderColor="currentColor"}
+          onMouseLeave={e=>e.currentTarget.style.borderColor="transparent"}>
+          {fmtEur(balance)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Dashboard({ store, onAdd, onGoSavings }) {
   const [sel,              setSel]            = useState(nowMKey());
   const [selectedAccountId,setSelectedAccount] = useState("all");
@@ -609,7 +814,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
   return (
     <div>
-      <PageHeader title="Mon Budget"><MonthTabs months={months} selected={sel} onSelect={setSel} /></PageHeader>
+      <PageHeader title="Mon Budget" onAdd={()=>onAdd(null)}><MonthTabs months={months} selected={sel} onSelect={setSel} /></PageHeader>
       <div style={{ padding:"16px", display:"flex", flexDirection:"column", gap:14 }}>
 
         {/* Account tabs */}
@@ -665,13 +870,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
               </div>
               <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
                 {accountBalances.savings.map(({account,balance})=>(
-                  <div key={account.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:"var(--surface2)", borderRadius:"var(--radius-sm)" }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                      <span style={{ fontSize:13, fontWeight:500 }}>{account.name}</span>
-                      <span style={{ fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:6, background:account.savingsSubtype==="blocked"?"var(--red-dim)":"var(--green-dim)", color:account.savingsSubtype==="blocked"?"var(--red)":"var(--green)" }}>{account.savingsSubtype==="blocked"?"🔒 Bloquée":"✓ Disponible"}</span>
-                    </div>
-                    <span style={{ fontSize:14, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:balance>=0?"var(--green)":"var(--red)" }}>{fmtEur(balance)}</span>
-                  </div>
+                  <SavingsBalanceRow key={account.id} account={account} balance={balance} store={store} />
                 ))}
               </div>
             </>}
@@ -706,7 +905,6 @@ function Dashboard({ store, onAdd, onGoSavings }) {
         </div>
       </div>
 
-      <Fab onClick={()=>selectedAccountId!=="all"&&!isSavings?onAdd(selectedAccountId):null} disabled={selectedAccountId==="all"||isSavings} />
       {editingTx && <FormModal store={store} transaction={editingTx} onClose={()=>setEditingTx(null)} />}
       {deletingTx && <DeleteModal tx={deletingTx} onCancel={()=>setDeletingTx(null)} onConfirm={()=>{store.remove(deletingTx.id);setDeletingTx(null);}} />}
     </div>
@@ -734,7 +932,7 @@ function Transactions({ store, onAdd }) {
 
   return (
     <div>
-      <PageHeader title="Transactions">
+      <PageHeader title="Transactions" onAdd={()=>onAdd(null)}>
         <div style={{ display:"flex", alignItems:"center", gap:8, background:"var(--header-input-bg)", border:"1px solid var(--header-input-border)", borderRadius:"var(--radius-sm)", padding:"9px 14px", marginBottom:12 }}>
           <span style={{ color:"var(--header-muted)", fontSize:16 }}>⌕</span>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Rechercher…" style={{ flex:1, fontSize:14, color:"var(--header-text)" }} />
@@ -761,7 +959,6 @@ function Transactions({ store, onAdd }) {
             </div>
           ))}
       </div>
-      <Fab onClick={()=>onAdd(null)} />
       {editingTx  && <FormModal store={store} transaction={editingTx} onClose={()=>setEditingTx(null)} />}
       {deletingTx && <DeleteModal tx={deletingTx} onCancel={()=>setDeletingTx(null)} onConfirm={()=>{store.remove(deletingTx.id);setDeletingTx(null);}} />}
     </div>
@@ -807,6 +1004,7 @@ function Settings({ store, user }) {
 
   const handleLogout = async () => {
     const { auth, signOut } = fb();
+    localStorage.removeItem("budget_last_activity");
     await signOut(auth);
   };
 
@@ -855,8 +1053,8 @@ function Settings({ store, user }) {
               <button onClick={()=>setEditingAccounts(true)} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--gold-dim)", border:"1px solid var(--gold)", color:"var(--gold)", fontSize:13, fontWeight:600 }}>✏️ Modifier les comptes</button>
             ) : (
               <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                {store.accounts.length<10 && (
-                  <button onClick={()=>store.addAccount()} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--green-dim)", border:"1px dashed var(--green)", color:"var(--green)", fontSize:13, fontWeight:600 }}>+ Ajouter un compte ({store.accounts.length}/10)</button>
+                {store.accounts.length<15 && (
+                  <button onClick={()=>store.addAccount()} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--green-dim)", border:"1px dashed var(--green)", color:"var(--green)", fontSize:13, fontWeight:600 }}>+ Ajouter un compte ({store.accounts.length}/15)</button>
                 )}
                 <button onClick={()=>setEditingAccounts(false)} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:14, fontWeight:700 }}>✓ Terminer</button>
               </div>
@@ -940,7 +1138,7 @@ function Settings({ store, user }) {
                   <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:6 }}>Jour de nettoyage</p>
                   <select value={store.cleanupDay} onChange={e=>store.updateCleanupDay(parseInt(e.target.value,10))}
                     style={{ fontSize:15, fontWeight:500, width:"100%", padding:"10px 12px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }}>
-                    {Array.from({length:28},(_,i)=>i+1).map(d=>(
+                    {Array.from({length:31},(_,i)=>i+1).map(d=>(
                       <option key={d} value={d} style={{ background:"var(--select-bg)" }}>{d===1?"1er":d} du mois</option>
                     ))}
                   </select>
@@ -950,6 +1148,22 @@ function Settings({ store, user }) {
                   <p style={{ fontSize:24, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--gold)" }}>{store.cleanupDay}</p>
                 </div>
               </div>
+              {(store.cleanupDay === 29 || store.cleanupDay === 30) && (
+                <div style={{ display:"flex", gap:8, padding:"9px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8, marginBottom:12 }}>
+                  <span style={{ fontSize:13, flexShrink:0 }}>⚠️</span>
+                  <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
+                    Le nettoyage automatique pourrait ne pas fonctionner en février, qui ne compte pas de jour {store.cleanupDay}.
+                  </p>
+                </div>
+              )}
+              {store.cleanupDay === 31 && (
+                <div style={{ display:"flex", gap:8, padding:"9px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8, marginBottom:12 }}>
+                  <span style={{ fontSize:13, flexShrink:0 }}>⚠️</span>
+                  <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
+                    Le nettoyage automatique pourrait ne pas fonctionner certains mois — avril, juin, septembre, novembre et février ne comptent pas de 31e jour.
+                  </p>
+                </div>
+              )}
             </div>
 
             <button onClick={handleCleanupClick} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13, fontWeight:600 }}>
@@ -975,35 +1189,47 @@ function Settings({ store, user }) {
             {/* Sélecteur des jours */}
             <div style={{ opacity: store.savingsSnapActive ? 1 : 0.4, pointerEvents: store.savingsSnapActive ? "auto" : "none", transition:"opacity 0.2s" }}>
               <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:10 }}>
-                Jours de snapshot — {store.savingsSnapDays.length}/10 sélectionné{store.savingsSnapDays.length > 1 ? "s" : ""}
+                Jours de snapshot — {store.savingsSnapDays.length} sélectionné{store.savingsSnapDays.length > 1 ? "s" : ""}
               </p>
               <div style={{ display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:5 }}>
-                {Array.from({length:28}, (_,i) => i+1).map(day => {
+                {Array.from({length:31}, (_,i) => i+1).map(day => {
                   const selected = store.savingsSnapDays.includes(day);
-                  const canAdd   = store.savingsSnapDays.length < 10;
                   const toggle   = () => {
                     if (selected) {
                       store.setSavingsSnapDays(store.savingsSnapDays.filter(d => d !== day));
-                    } else if (canAdd) {
+                    } else {
                       store.setSavingsSnapDays([...store.savingsSnapDays, day].sort((a,b)=>a-b));
                     }
                   };
                   return (
-                    <button key={day} onClick={toggle} disabled={!selected && !canAdd}
+                    <button key={day} onClick={toggle}
                       style={{ padding:"7px 2px", borderRadius:7, border:"1px solid", fontSize:12, fontWeight:600, textAlign:"center",
                         borderColor: selected ? "var(--gold)" : "var(--border)",
                         background:  selected ? "var(--gold-dim)" : "var(--bg)",
-                        color:       selected ? "var(--gold)" : (!canAdd ? "var(--text-sub)" : "var(--text-muted)"),
-                        opacity:     !selected && !canAdd ? 0.4 : 1,
+                        color:       selected ? "var(--gold)" : "var(--text-muted)",
                         transition:  "all 0.15s" }}>
                       {day}
                     </button>
                   );
                 })}
               </div>
-              <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:10 }}>
-                Jours 29, 30, 31 exclus pour garantir la compatibilité avec tous les mois.
-              </p>
+              {store.savingsSnapDays.some(d => d === 29 || d === 30) && !store.savingsSnapDays.includes(31) && (
+                <div style={{ display:"flex", gap:8, padding:"9px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8, marginTop:10 }}>
+                  <span style={{ fontSize:13, flexShrink:0 }}>⚠️</span>
+                  <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
+                    Le snapshot automatique du {store.savingsSnapDays.filter(d => d === 29 || d === 30).join(" et du ")} pourrait ne pas se déclencher en février.
+                  </p>
+                </div>
+              )}
+              {store.savingsSnapDays.includes(31) && (
+                <div style={{ display:"flex", gap:8, padding:"9px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8, marginTop:10 }}>
+                  <span style={{ fontSize:13, flexShrink:0 }}>⚠️</span>
+                  <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
+                    Le snapshot automatique du 31 pourrait ne pas se déclencher certains mois — avril, juin, septembre, novembre et février ne comptent pas de 31e jour.
+                    {store.savingsSnapDays.some(d => d === 29 || d === 30) && ` Les jours ${store.savingsSnapDays.filter(d => d === 29 || d === 30).join(" et ")} pourraient également ne pas se déclencher en février.`}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </Section>
@@ -1177,14 +1403,6 @@ function TplItemRow({ item, onDelete, onEdit }) {
 
 function EmptyState({ text }) {
   return <div style={{ textAlign:"center", padding:"40px 20px", color:"var(--text-muted)", fontSize:14 }}><p style={{ fontSize:32, marginBottom:10 }}>◌</p>{text}</div>;
-}
-
-function Fab({ onClick, disabled }) {
-  const [hover,setHover]=useState(false);
-  return (
-    <button onClick={onClick} disabled={disabled} onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
-      style={{ position:"fixed", bottom:90, right:"calc(50% - 220px)", width:54,height:54, borderRadius:"50%", background:disabled?"var(--surface3)":"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:disabled?"var(--text-sub)":"#0e0f13", fontSize:26, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:disabled?"none":hover?"0 6px 28px rgba(201,168,76,0.55)":"0 4px 20px rgba(201,168,76,0.4)", transform:hover&&!disabled?"scale(1.08)":"scale(1)", transition:"transform 0.15s,box-shadow 0.15s", cursor:disabled?"not-allowed":"pointer", opacity:disabled?0.5:1 }}>+</button>
-  );
 }
 
 function Field({ label, children }) {
