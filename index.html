@@ -1008,6 +1008,30 @@ function Settings({ store, user }) {
     await signOut(auth);
   };
 
+  const [resetting, setResetting] = useState(false);
+  const handleDemoReset = async () => {
+    if (!window.confirm("Réinitialiser les données démo ? Toutes les modifications seront perdues.")) return;
+    setResetting(true);
+    try {
+      const uid = user.uid;
+      await fbSave(uid, {
+        transactions: DEMO_TX,
+        templates: DEFAULT_TPL,
+        accounts: DEMO_ACCOUNTS,
+        cleanupDay: DEFAULT_CLEANUP_DAY,
+        autoCleanup: DEFAULT_AUTO_CLEANUP,
+        savingsHistory: DEMO_SAVINGS_HISTORY,
+        savingsSnapDays: DEFAULT_SAVINGS_SNAP_DAYS,
+        savingsSnapActive: DEFAULT_SAVINGS_SNAP_ACTIVE,
+      });
+      // Reload page to reinitialize store state cleanly
+      window.location.reload();
+    } catch(e) {
+      alert("Erreur lors de la réinitialisation.");
+      setResetting(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader title="Réglages" />
@@ -1239,6 +1263,12 @@ function Settings({ store, user }) {
           <div style={{ padding:"14px 16px" }}>
             <p style={{ fontSize:13, color:"var(--text-muted)", marginBottom:4 }}>{store.transactions.length} transactions · synchronisées sur Firebase</p>
             <p style={{ fontSize:12, color:"var(--text-sub)", marginBottom:12 }}>Connecté en tant que {user.email}</p>
+            {store.isDemo && (
+              <button onClick={handleDemoReset} disabled={resetting}
+                style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"rgba(201,168,76,0.1)", border:"1px solid var(--gold)", color:"var(--gold)", fontSize:13, fontWeight:600, marginBottom:10, opacity: resetting ? 0.6 : 1 }}>
+                {resetting ? "⏳ Réinitialisation…" : "🔄 Réinitialiser les données démo"}
+              </button>
+            )}
             <button onClick={handleLogout} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13, fontWeight:600 }}>
               🚪 Se déconnecter
             </button>
