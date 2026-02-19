@@ -814,7 +814,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
   return (
     <div>
-      <PageHeader title="Mon Budget" onAdd={()=>onAdd(null)}><MonthTabs months={months} selected={sel} onSelect={setSel} /></PageHeader>
+      <PageHeader title="Mon Budget"><MonthTabs months={months} selected={sel} onSelect={setSel} /></PageHeader>
       <div style={{ padding:"16px", display:"flex", flexDirection:"column", gap:14 }}>
 
         {/* Account tabs */}
@@ -892,7 +892,10 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
         {/* Recent */}
         <div className="fade-up">
-          <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.06em", textTransform:"uppercase", marginBottom:10 }}>Récents</p>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+            <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.06em", textTransform:"uppercase" }}>Récents</p>
+            <button onClick={()=>onAdd(null)} style={{ background:"none", border:"none", color:"var(--gold)", fontSize:13, fontWeight:600, padding:0, cursor:"pointer" }}>+ Ajouter</button>
+          </div>
           {txM.length===0 ? <EmptyState text="Aucune transaction ce mois-ci" />
             : <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden" }}>
                 {txM.slice(0,5).map((tx,i)=>(
