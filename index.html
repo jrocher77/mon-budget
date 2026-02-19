@@ -398,13 +398,119 @@ function useStore(uid, email) {
     isDemo };
 }
 
+// ─── Magic Word Hash (SHA-256 — le mot n'apparaît pas en clair) ────────────
+const DEMO_MAGIC_HASH = "eef0c396c1a2c19d3119217a759fad0d6ab57465cb9241e80277378bfd970236";
+
+async function hashString(str) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+// ─── Modale Mot Magique ────────────────────────────────────────────────────
+function MagicWordModal({ onSuccess, onClose }) {
+  const [word, setWord]       = useState("");
+  const [error, setError]     = useState("");
+  const [shaking, setShaking] = useState(false);
+  const inputRef              = React.useRef(null);
+
+  React.useEffect(() => { setTimeout(() => inputRef.current?.focus(), 80); }, []);
+
+  const handleCheck = async () => {
+    const hash = await hashString(word.trim().toLowerCase());
+    if (hash === DEMO_MAGIC_HASH) {
+      onSuccess();
+    } else {
+      setError("✗ Ce n'est pas le bon mot…");
+      setShaking(true);
+      setTimeout(() => setShaking(false), 500);
+      setWord("");
+    }
+  };
+
+  return (
+    <div style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", backdropFilter:"blur(4px)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:9999, padding:24
+    }} onClick={e => e.target===e.currentTarget && onClose()}>
+      <div style={{
+        background:"var(--surface)", border:"1px solid var(--gold)",
+        borderRadius:"var(--radius)", padding:32, maxWidth:360, width:"100%",
+        boxShadow:"0 0 40px rgba(212,175,55,0.15)",
+        animation: shaking ? "shake 0.4s ease" : "fadeInUp 0.25s ease",
+      }}>
+        {/* Icône */}
+        <div style={{ textAlign:"center", marginBottom:20 }}>
+          <div style={{
+            display:"inline-flex", alignItems:"center", justifyContent:"center",
+            width:64, height:64, borderRadius:"50%",
+            background:"linear-gradient(135deg, #2a2208, #3d3010)",
+            border:"2px solid var(--gold)", fontSize:28, marginBottom:12
+          }}>🗝️</div>
+          <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:22, color:"var(--gold)", margin:0 }}>
+            Accès restreint
+          </p>
+          <p style={{ fontSize:13, color:"var(--text-muted)", marginTop:6, lineHeight:1.5 }}>
+            Entrez le mot magique pour accéder au mode démo.
+          </p>
+        </div>
+
+        {/* Champ */}
+        <input
+          ref={inputRef}
+          type="password"
+          value={word}
+          onChange={e => { setWord(e.target.value); setError(""); }}
+          onKeyDown={e => e.key === "Enter" && handleCheck()}
+          placeholder="Mot magique…"
+          style={{
+            width:"100%", fontSize:15, padding:"11px 14px", boxSizing:"border-box",
+            background:"var(--surface2)", border:`1px solid ${error ? "var(--red)" : "var(--border)"}`,
+            borderRadius:"var(--radius-sm)", color:"var(--text)", marginBottom:8,
+            textAlign:"center", letterSpacing:"0.15em"
+          }}
+        />
+        {error && <p style={{ fontSize:12, color:"var(--red)", textAlign:"center", marginBottom:8 }}>{error}</p>}
+
+        {/* Boutons */}
+        <div style={{ display:"flex", gap:10, marginTop:4 }}>
+          <button onClick={onClose} style={{
+            flex:1, padding:"11px", borderRadius:"var(--radius-sm)",
+            background:"var(--surface2)", border:"1px solid var(--border)",
+            color:"var(--text-muted)", fontSize:14, fontWeight:600, cursor:"pointer"
+          }}>Annuler</button>
+          <button onClick={handleCheck} style={{
+            flex:2, padding:"11px", borderRadius:"var(--radius-sm)",
+            background:"linear-gradient(135deg, var(--gold-light), var(--gold))",
+            border:"none", color:"#0e0f13", fontSize:14, fontWeight:700, cursor:"pointer"
+          }}>✨ Entrer</button>
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes fadeInUp {
+          from { opacity:0; transform:translateY(16px); }
+          to   { opacity:1; transform:translateY(0); }
+        }
+        @keyframes shake {
+          0%,100% { transform:translateX(0); }
+          20%     { transform:translateX(-8px); }
+          40%     { transform:translateX(8px); }
+          60%     { transform:translateX(-6px); }
+          80%     { transform:translateX(6px); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 // ─── Login Screen ──────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
-  const [email,    setEmail]    = useState("");
-  const [password, setPassword] = useState("");
-  const [error,    setError]    = useState("");
-  const [loading,  setLoading]  = useState(false);
+  const [email,       setEmail]       = useState("");
+  const [password,    setPassword]    = useState("");
+  const [error,       setError]       = useState("");
+  const [loading,     setLoading]     = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
+  const [showMagic,   setShowMagic]   = useState(false);
 
   const doLogin = async (credentials) => {
     const em = credentials?.email || email;
@@ -421,60 +527,67 @@ function LoginScreen({ onLogin }) {
     }
   };
 
-  const handleSubmit = () => doLogin();
-  const handleDemo   = () => doLogin({ email: DEMO_EMAIL, password: DEMO_PASSWORD });
+  const handleSubmit  = () => doLogin();
+  const handleDemo    = () => setShowMagic(true);
+  const handleMagicOk = () => {
+    setShowMagic(false);
+    doLogin({ email: DEMO_EMAIL, password: DEMO_PASSWORD });
+  };
 
   return (
-    <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:24, background:"var(--bg)" }}>
-      <div style={{ width:"100%", maxWidth:380 }}>
-        <div style={{ textAlign:"center", marginBottom:36 }}>
-          <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:38, color:"var(--gold)", letterSpacing:"-0.02em" }}>Mon Budget</p>
-          <p style={{ fontSize:14, color:"var(--text-muted)", marginTop:6 }}>Connectez-vous pour accéder à votre budget</p>
-        </div>
-        <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:24, display:"flex", flexDirection:"column", gap:16 }}>
-          <div>
-            <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.07em", display:"block", marginBottom:6 }}>Email</label>
-            <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
-              placeholder="votre@email.com" autoComplete="email"
-              style={{ width:"100%", fontSize:15, padding:"10px 14px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }} />
+    <>
+      {showMagic && <MagicWordModal onSuccess={handleMagicOk} onClose={() => setShowMagic(false)} />}
+      <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:24, background:"var(--bg)" }}>
+        <div style={{ width:"100%", maxWidth:380 }}>
+          <div style={{ textAlign:"center", marginBottom:36 }}>
+            <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:38, color:"var(--gold)", letterSpacing:"-0.02em" }}>Mon Budget</p>
+            <p style={{ fontSize:14, color:"var(--text-muted)", marginTop:6 }}>Connectez-vous pour accéder à votre budget</p>
           </div>
-          <div>
-            <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.07em", display:"block", marginBottom:6 }}>Mot de passe</label>
-            <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
-              placeholder="••••••••" autoComplete="current-password"
-              onKeyDown={e=>e.key==="Enter"&&handleSubmit()}
-              style={{ width:"100%", fontSize:15, padding:"10px 14px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }} />
-          </div>
-          {error && <p style={{ fontSize:13, color:"var(--red)", textAlign:"center" }}>{error}</p>}
-          <button onClick={handleSubmit} disabled={loading || demoLoading} style={{
-            padding:"13px", borderRadius:"var(--radius-sm)",
-            background: loading ? "var(--surface3)" : "linear-gradient(135deg, var(--gold-light), var(--gold))",
-            border:"none", color:"#0e0f13", fontSize:15, fontWeight:700,
-            opacity: loading ? 0.7 : 1,
-          }}>
-            {loading ? "Connexion…" : "Se connecter"}
-          </button>
+          <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:24, display:"flex", flexDirection:"column", gap:16 }}>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.07em", display:"block", marginBottom:6 }}>Email</label>
+              <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
+                placeholder="votre@email.com" autoComplete="email"
+                style={{ width:"100%", fontSize:15, padding:"10px 14px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }} />
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.07em", display:"block", marginBottom:6 }}>Mot de passe</label>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
+                placeholder="••••••••" autoComplete="current-password"
+                onKeyDown={e=>e.key==="Enter"&&handleSubmit()}
+                style={{ width:"100%", fontSize:15, padding:"10px 14px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }} />
+            </div>
+            {error && <p style={{ fontSize:13, color:"var(--red)", textAlign:"center" }}>{error}</p>}
+            <button onClick={handleSubmit} disabled={loading || demoLoading} style={{
+              padding:"13px", borderRadius:"var(--radius-sm)",
+              background: loading ? "var(--surface3)" : "linear-gradient(135deg, var(--gold-light), var(--gold))",
+              border:"none", color:"#0e0f13", fontSize:15, fontWeight:700,
+              opacity: loading ? 0.7 : 1,
+            }}>
+              {loading ? "Connexion…" : "Se connecter"}
+            </button>
 
-          {/* Separator */}
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <div style={{ flex:1, height:1, background:"var(--border)" }} />
-            <span style={{ fontSize:11, color:"var(--text-sub)", fontWeight:500 }}>ou</span>
-            <div style={{ flex:1, height:1, background:"var(--border)" }} />
-          </div>
+            {/* Separator */}
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ flex:1, height:1, background:"var(--border)" }} />
+              <span style={{ fontSize:11, color:"var(--text-sub)", fontWeight:500 }}>ou</span>
+              <div style={{ flex:1, height:1, background:"var(--border)" }} />
+            </div>
 
-          {/* Demo button */}
-          <button onClick={handleDemo} disabled={loading || demoLoading} style={{
-            padding:"12px", borderRadius:"var(--radius-sm)",
-            background:"var(--surface2)", border:"1px solid var(--border)",
-            color:"var(--text-muted)", fontSize:14, fontWeight:600,
-            opacity: demoLoading ? 0.7 : 1, display:"flex", alignItems:"center", justifyContent:"center", gap:8
-          }}>
-            <span style={{ fontSize:16 }}>👀</span>
-            {demoLoading ? "Chargement…" : "Voir la démo"}
-          </button>
+            {/* Demo button */}
+            <button onClick={handleDemo} disabled={loading || demoLoading} style={{
+              padding:"12px", borderRadius:"var(--radius-sm)",
+              background:"var(--surface2)", border:"1px solid var(--border)",
+              color:"var(--text-muted)", fontSize:14, fontWeight:600,
+              opacity: demoLoading ? 0.7 : 1, display:"flex", alignItems:"center", justifyContent:"center", gap:8
+            }}>
+              <span style={{ fontSize:16 }}>👀</span>
+              {demoLoading ? "Chargement…" : "Voir la démo"}
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -498,7 +611,7 @@ function App() {
 
   const store = useStore(user?.uid, user?.email);
 
-  const INACTIVITY_LIMIT = 8 * 60 * 60 * 1000; // 8 hours in ms
+  const INACTIVITY_LIMIT = (user?.email === DEMO_EMAIL ? 15 * 60 : 8 * 60 * 60) * 1000; // 15min demo, 8h normal
   const ACTIVITY_KEY     = "budget_last_activity";
 
   // Update last activity timestamp on any user interaction
@@ -1058,7 +1171,7 @@ function Settings({ store, user }) {
         <Section title="Comptes bancaires" icon="🏦">
           <div style={{ padding:"14px 16px" }}>
             <p style={{ fontSize:12, color:"var(--text-muted)", marginBottom:12, lineHeight:1.6 }}>
-              Gérez vos comptes (max. 10). Les soldes épargne 💰 sont saisis manuellement.
+              Gérez vos comptes (max. 15). Les soldes épargne 💰 sont saisis manuellement.
             </p>
             <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:12 }}>
               {/* Comptes courants */}
