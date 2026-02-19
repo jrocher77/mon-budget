@@ -643,23 +643,46 @@ function App() {
     });
   }, []);
 
-  // Also check inactivity when tab regains focus
+  // Also check inactivity when tab regains focus (fixes iOS Safari background freeze)
   useEffect(() => {
-    const onFocus = async () => {
+    const checkInactivity = async () => {
       if (!user) return;
-      const last = parseInt(localStorage.getItem(ACTIVITY_KEY) || "0", 10);
-      if (last > 0 && Date.now() - last > INACTIVITY_LIMIT) {
-        const { auth, signOut } = fb();
-        await signOut(auth);
-        localStorage.removeItem(ACTIVITY_KEY);
+      try {
+        const last = parseInt(localStorage.getItem(ACTIVITY_KEY) || "0", 10);
+        if (last > 0 && Date.now() - last > INACTIVITY_LIMIT) {
+          const { auth, signOut } = fb();
+          await signOut(auth);
+          localStorage.removeItem(ACTIVITY_KEY);
+        }
+      } catch (e) {
+        // localStorage may be blocked in iOS private mode — ignore silently
       }
     };
+
+    // iOS Safari: visibilitychange is the most reliable event when returning from background
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") checkInactivity();
+    };
+
+    // Fallback for desktop browsers
+    const onFocus = () => checkInactivity();
+
+    // pageshow fires on iOS when navigating back (bfcache restore) — critical for iOS
+    const onPageShow = (e) => {
+      // e.persisted = true means page was restored from bfcache (common on iOS)
+      if (e.persisted) checkInactivity();
+    };
+
     window.addEventListener("focus", onFocus);
-    window.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") onFocus(); });
+    window.addEventListener("pageshow", onPageShow);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     return () => {
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onPageShow);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [user]);
+  }, [user, INACTIVITY_LIMIT]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
