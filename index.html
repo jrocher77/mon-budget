@@ -215,11 +215,10 @@ const DEMO_SAVINGS_HISTORY = [
 // ─── Firebase helpers ──────────────────────────────────────────────────────
 const fb = () => window._fb;
 
-async function fbLoad(uid) {
-  const { db, doc, getDoc } = fb();
+function fbSubscribe(uid, onData) {
+  const { db, doc, onSnapshot } = fb();
   const ref = doc(db, "budgets", uid);
-  const snap = await getDoc(ref);
-  return snap.exists() ? snap.data() : null;
+  return onSnapshot(ref, snap => onData(snap.exists() ? snap.data() : null));
 }
 
 async function fbSave(uid, data) {
@@ -248,11 +247,15 @@ function useStore(uid, email) {
   const [showFutureTx,      setShowFutureTx]      = useState(DEFAULT_SHOW_FUTURE_TX);
   const saveTimer = useRef(null);
   const loadedRef = useRef(false); // true once Firestore data is fully loaded
+  const lastSaveAt = useRef(0);    // timestamp of last local save, to ignore echo
 
-  // ── Load from Firestore on mount ────────────────────────────────────────
+  // ── Subscribe to Firestore in real-time ─────────────────────────────────
   useEffect(() => {
     if (!uid) return;
-    fbLoad(uid).then(data => {
+    const unsub = fbSubscribe(uid, data => {
+      // Ignore echoes of our own saves (within 3 seconds)
+      if (loadedRef.current && Date.now() - lastSaveAt.current < 3000) return;
+
       if (data) {
         setTx(        (data.transactions || SAMPLE_TX).map(t => ({ ...t, pointed: t.pointed || false })) );
         setTpl(       (() => {
@@ -275,8 +278,8 @@ function useStore(uid, email) {
         setShowFutureTx(data.showFutureTx !== undefined ? data.showFutureTx : DEFAULT_SHOW_FUTURE_TX);
         snapDaysRef.current   = data.savingsSnapDays   || DEFAULT_SAVINGS_SNAP_DAYS;
         snapActiveRef.current = data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE;
-      } else {
-        // First time: save sample data
+      } else if (!loadedRef.current) {
+        // First time: no document yet → save sample data
         const initTx      = isDemo ? DEMO_TX      : SAMPLE_TX;
         const initAccts   = isDemo ? DEMO_ACCOUNTS : DEFAULT_ACCOUNTS;
         const initHistory = isDemo ? DEMO_SAVINGS_HISTORY : DEFAULT_SAVINGS_HISTORY;
@@ -287,9 +290,12 @@ function useStore(uid, email) {
         setCardDebitDates(initCdd);
         fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX });
       }
-      loadedRef.current = true;
-      setReady(true);
+      if (!loadedRef.current) {
+        loadedRef.current = true;
+        setReady(true);
+      }
     });
+    return () => unsub();
   }, [uid]);
 
   // ── Auto-save to Firestore (debounced 1s) ───────────────────────────────
@@ -303,6 +309,7 @@ function useStore(uid, email) {
         Object.keys(t).forEach(k => { if (t[k] !== undefined) clean[k] = t[k]; });
         return clean;
       });
+      lastSaveAt.current = Date.now();
       fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft });
     }, 1000);
   }, [uid, ready]);
