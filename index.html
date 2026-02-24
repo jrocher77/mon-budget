@@ -255,27 +255,37 @@ function useStore(uid, email) {
   const saveTimer = useRef(null);
   const loadedRef = useRef(false); // true once Firestore data is fully loaded
   const lastSaveAt = useRef(0);    // timestamp of last local save, to ignore echo
+  const hasReceivedData = useRef(false); // true once we've received a non-null document — guards against transient null
 
   // ── Subscribe to Firestore in real-time ─────────────────────────────────
   useEffect(() => {
     if (!uid) return;
     const unsub = fbSubscribe(uid, data => {
-      // Ignore echoes of our own saves (within 3 seconds)
-      if (loadedRef.current && Date.now() - lastSaveAt.current < 3000) return;
+      // Ignore echoes of our own saves (within 8 seconds)
+      if (loadedRef.current && Date.now() - lastSaveAt.current < 8000) return;
 
       if (data) {
-        setTx(        (data.transactions || SAMPLE_TX).map(t => ({ ...t, pointed: t.pointed || false })) );
-        setTpl(       (() => {
+        hasReceivedData.current = true;
+
+        // SAFETY: never fall back to SAMPLE_TX / DEFAULT_ACCOUNTS if the field is simply
+        // missing or empty — that would silently overwrite real data on the next persist.
+        const safeTx    = Array.isArray(data.transactions) ? data.transactions : [];
+        const safeAccts = Array.isArray(data.accounts) && data.accounts.length > 0
+                            ? data.accounts
+                            : DEFAULT_ACCOUNTS;
+
+        setTx( safeTx.map(t => ({ ...t, pointed: t.pointed || false })) );
+        setTpl( (() => {
             const t = data.templates;
             if (!t) return DEFAULT_TPL;
             // Migrate old format { even:{items:[]}, odd:{items:[]} } → per-account
             if (t.even || t.odd) {
-              const firstCheckingId = (data.accounts||DEFAULT_ACCOUNTS).find(a=>a.type==="checking")?.id;
+              const firstCheckingId = safeAccts.find(a=>a.type==="checking")?.id;
               return firstCheckingId ? { [firstCheckingId]: { even: t.even||{items:[]}, odd: t.odd||{items:[]} } } : DEFAULT_TPL;
             }
             return t;
           })() );
-        setAccounts(  (data.accounts  || DEFAULT_ACCOUNTS).map(a => ({ ...a, balance: a.balance || 0, savingsSubtype: a.savingsSubtype || "available" })) );
+        setAccounts( safeAccts.map(a => ({ ...a, balance: a.balance || 0, savingsSubtype: a.savingsSubtype || "available" })) );
         setCleanupDay(data.cleanupDay || DEFAULT_CLEANUP_DAY);
         setAutoCleanup(data.autoCleanup !== undefined ? data.autoCleanup : DEFAULT_AUTO_CLEANUP);
         setSavingsHistory(data.savingsHistory || DEFAULT_SAVINGS_HISTORY);
@@ -285,8 +295,10 @@ function useStore(uid, email) {
         setShowFutureTx(data.showFutureTx !== undefined ? data.showFutureTx : DEFAULT_SHOW_FUTURE_TX);
         snapDaysRef.current   = data.savingsSnapDays   || DEFAULT_SAVINGS_SNAP_DAYS;
         snapActiveRef.current = data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE;
-      } else if (!loadedRef.current) {
-        // First time: no document yet → save sample data
+
+      } else if (!loadedRef.current && !hasReceivedData.current) {
+        // Document truly absent (brand new account) → initialise with sample data.
+        // SAFETY: double-guard — only runs if we have NEVER received real data from Firestore.
         const initTx      = isDemo ? DEMO_TX      : SAMPLE_TX;
         const initAccts   = isDemo ? DEMO_ACCOUNTS : DEFAULT_ACCOUNTS;
         const initHistory = isDemo ? DEMO_SAVINGS_HISTORY : DEFAULT_SAVINGS_HISTORY;
@@ -296,7 +308,12 @@ function useStore(uid, email) {
         setSavingsHistory(initHistory);
         setCardDebitDates(initCdd);
         fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX });
+
+      } else {
+        // Document disappeared AFTER we had data → do NOT reinitialise.
+        console.warn("[useStore] Firestore returned null after data was loaded — ignoring to protect existing data.");
       }
+
       if (!loadedRef.current) {
         loadedRef.current = true;
         setReady(true);
@@ -847,7 +864,6 @@ function TabBar({ tab, setTab }) {
 // ─── PageHeader ────────────────────────────────────────────────────────────
 function PageHeader({ title, onAdd, children }) {
   if (COMPACT_STICKY_HEADER) {
-    // Mode compact + sticky (comme la barre du bas)
     return (
       <div style={{
         position:"sticky", top:0, zIndex:50,
