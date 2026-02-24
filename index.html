@@ -83,7 +83,7 @@
       --shadow: 0 4px 20px rgba(0,0,0,0.09);
     }
 
-    :root { --radius: 16px; --radius-sm: 10px; }
+    :root { --radius: 16px; --radius-sm: 10px; --text-sub: rgba(240,236,228,0.25); --gold: #c9a84c; }
     html, body, #root { height: 100%; }
     body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; transition: background 0.3s, color 0.3s; }
     ::-webkit-scrollbar { width: 4px; }
@@ -623,7 +623,7 @@ function LoginScreen({ onLogin }) {
             <div>
               <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.07em", display:"block", marginBottom:6 }}>Email</label>
               <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
-                placeholder="votre@email.com" autoComplete="username"
+                placeholder="votre@email.com" autoComplete="email"
                 style={{ width:"100%", fontSize:15, padding:"10px 14px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }} />
             </div>
             <div>
@@ -650,7 +650,7 @@ function LoginScreen({ onLogin }) {
             </div>
 
             {/* Demo button */}
-            <button onClick={handleDemo} disabled={loading || demoLoading} style={{
+            <button type="button" onClick={handleDemo} disabled={loading || demoLoading} style={{
               padding:"12px", borderRadius:"var(--radius-sm)",
               background:"var(--surface2)", border:"1px solid var(--border)",
               color:"var(--text-muted)", fontSize:14, fontWeight:600,
@@ -802,7 +802,7 @@ function TabBar({ tab, setTab }) {
   const tabs = [
     { id:"dashboard",    icon:"◈", label:"Tableau"    },
     { id:"transactions", icon:"≡", label:"Historique" },
-    { id:"settings",     icon:"⚙", label:"Réglages"   },
+    { id:"settings",     icon:"⚙︎", label:"Réglages"   },
   ];
   return (
     <div style={{ position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:480, background:"var(--tab-bg)", backdropFilter:"blur(20px)", borderTop:"1px solid var(--border)", display:"flex", justifyContent:"space-around", padding:"10px 0 16px", zIndex:100 }}>
