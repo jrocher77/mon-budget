@@ -123,6 +123,10 @@ function isEven(mk){ return parseInt(mk.split("-")[1],10) % 2 === 0; }
 function dBack(n)  { const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().split("T")[0]; }
 
 // ─── Default data ──────────────────────────────────────────────────────────
+// ─── UI Feature flags ──────────────────────────────────────────────────────
+// Mettre à false pour revenir à l'ancien comportement (header normal non-sticky)
+const COMPACT_STICKY_HEADER = true;
+
 const DEFAULT_CLEANUP_DAY  = 10;
 const DEFAULT_AUTO_CLEANUP = true;
 const DEFAULT_SAVINGS_HISTORY = [];
@@ -842,6 +846,31 @@ function TabBar({ tab, setTab }) {
 
 // ─── PageHeader ────────────────────────────────────────────────────────────
 function PageHeader({ title, onAdd, children }) {
+  if (COMPACT_STICKY_HEADER) {
+    // Mode compact + sticky (comme la barre du bas)
+    return (
+      <div style={{
+        position:"sticky", top:0, zIndex:50,
+        background:"var(--header-bg)",
+        backdropFilter:"blur(20px)",
+        borderBottom:"1px solid var(--border)",
+        padding: children ? "8px 16px 8px" : "8px 16px",
+        display:"flex", alignItems:"center", gap:8,
+      }}>
+        <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:18, letterSpacing:"-0.02em", color:"var(--header-text)", flex:1, margin:0 }}>{title}</p>
+        {children && <div style={{ flex:2 }}>{children}</div>}
+        {onAdd && (
+          <button onClick={onAdd}
+            style={{ display:"flex", alignItems:"center", gap:4, padding:"5px 12px", borderRadius:20,
+              background:"var(--gold-dim)", border:"1px solid var(--gold)",
+              color:"var(--gold)", fontSize:12, fontWeight:600, flexShrink:0 }}>
+            <span style={{ fontSize:14, lineHeight:1 }}>＋</span> Ajouter
+          </button>
+        )}
+      </div>
+    );
+  }
+  // Mode original (COMPACT_STICKY_HEADER = false)
   return (
     <div style={{ background:"var(--header-bg)", padding:"16px 20px 18px", borderBottom:"1px solid var(--border)" }}>
       <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:28, letterSpacing:"-0.02em", color:"var(--header-text)", marginBottom:children?14:0 }}>{title}</p>
@@ -2572,10 +2601,10 @@ function SavingsStats({ store, onBack }) {
   return (
     <div style={{ minHeight:"100vh", background:"var(--bg)" }}>
       {/* Header */}
-      <div style={{ background:"var(--header-bg)", padding:"16px 20px", borderBottom:"1px solid var(--border)" }}>
+      <div style={{ background:"var(--header-bg)", padding: COMPACT_STICKY_HEADER ? "8px 16px" : "16px 20px", borderBottom:"1px solid var(--border)", ...(COMPACT_STICKY_HEADER ? { position:"sticky", top:0, zIndex:50, backdropFilter:"blur(20px)" } : {}) }}>
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-          <button onClick={onBack} style={{ background:"var(--header-btn-bg)", border:"1px solid var(--header-btn-border)", borderRadius:8, padding:"6px 12px", color:"var(--header-muted)", fontSize:13, fontWeight:500 }}>← Retour</button>
-          <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:26, letterSpacing:"-0.02em", color:"var(--header-text)" }}>Statistiques épargne</p>
+          <button onClick={onBack} style={{ background:"var(--header-btn-bg)", border:"1px solid var(--header-btn-border)", borderRadius:8, padding: COMPACT_STICKY_HEADER ? "4px 10px" : "6px 12px", color:"var(--header-muted)", fontSize:13, fontWeight:500 }}>← Retour</button>
+          <p style={{ fontFamily:"'DM Serif Display',serif", fontSize: COMPACT_STICKY_HEADER ? 18 : 26, letterSpacing:"-0.02em", color:"var(--header-text)" }}>Statistiques épargne</p>
         </div>
       </div>
 
