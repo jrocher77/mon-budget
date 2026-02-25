@@ -1,145 +1,143 @@
-# 💰 Mon Budget
+# Mon Budget
 
-Application web de gestion de budget personnel, hébergée sur GitHub Pages avec Firebase pour l'authentification et le stockage des données.
-
-🔗 **URL** : `https://votrenom.github.io/mon-budget`
+> Application web & mobile de gestion budgétaire personnelle — v1.0 • Février 2026
 
 ---
 
-## 🏗️ Architecture
+## Fonctionnalités
 
-```
-GitHub Pages (hébergement + HTTPS)
-        ↕
-Firebase Authentication (connexion email/mot de passe)
-        ↕
-Firebase Firestore (données synchronisées PC ↔ mobile)
-```
+| | Fonctionnalité | Description |
+|---|---|---|
+| 💳 | **Multi-comptes** | Gérez jusqu'à 15 comptes (courants et épargne) au même endroit |
+| 📊 | **Tableau de bord** | Vue synthétique par mois avec revenus, dépenses et soldes par compte |
+| ≡ | **Historique** | Consultez toutes vos transactions avec recherche et filtres avancés |
+| 📅 | **Modèles récurrents** | Configurez des opérations mensuelles automatiques par mois pair/impair |
+| 💰 | **Suivi de l'épargne** | Enregistrez et visualisez graphiquement l'évolution de votre épargne |
+| 🗑️ | **Nettoyage auto.** | Supprimez automatiquement les anciennes transactions à une date configurable |
+| 🎨 | **Thèmes** | Basculez entre un thème sombre et un thème clair |
+| ☁️ | **Synchronisation** | Données sauvegardées en temps réel sur Firebase |
 
 ---
 
-## ✨ Fonctionnalités
+## Connexion
 
-### Tableau de bord
-- Vue mensuelle avec navigation pair/impair
-- Sélecteur de compte (tous les comptes ou compte individuel)
-- Solde, revenus et dépenses du mois
-- 5 transactions récentes avec actions rapides
-- Application des modèles récurrents en un clic
+### Compte utilisateur
+Saisissez votre adresse e-mail et votre mot de passe sur l'écran de connexion. Les données sont synchronisées automatiquement depuis le cloud dès l'authentification.
 
-### Transactions
-- Liste complète groupée par date
-- Recherche par libellé
-- Filtres : tout / dépenses / revenus
-- Ajout, édition et suppression avec confirmation
-- Pointage des transactions (rapprochement bancaire)
+### Mode démo
+Cliquez sur **« Voir la démo »** pour explorer l'application sans créer de compte. Un jeu de données pré-rempli est chargé automatiquement.
+
+> ⚠️ **Attention** — Les modifications effectuées en mode démo sont visibles par tous les visiteurs. Ne saisissez aucune donnée personnelle.
+
+### Déconnexion automatique
+- Compte normal : après **8 heures** d'inactivité
+- Mode démo : après **15 minutes** d'inactivité
+
+---
+
+## Navigation
+
+L'application s'articule autour de trois onglets dans la barre de navigation fixe en bas de l'écran :
+
+| Icône | Onglet | Description |
+|---|---|---|
+| ◈ | **Tableau de bord** | Vue d'ensemble du mois sélectionné |
+| ≡ | **Historique** | Liste complète de toutes les transactions |
+| ⚙ | **Réglages** | Configuration des comptes, modèles, apparence... |
+
+---
+
+## Tableau de bord
+
+- **Sélection du mois** : naviguez entre le mois précédent, le mois courant et les deux mois suivants.
+- **Filtrage par compte** : basculez entre « Tous les comptes » et un compte courant individuel.
+- **Solde du mois** : affiché en vert (positif) ou en rouge (négatif).
+- **Transactions récentes** : les 5 dernières du mois, avec actions de pointage (✓), modification (✎) et suppression (✕).
+- **Modèles** : un bouton **« ↓ Appliquer le modèle »** permet d'insérer automatiquement les opérations récurrentes du mois.
+
+---
+
+## Historique
+
+Affiche l'ensemble des transactions, tous mois et comptes confondus, regroupées par date.
+
+- **Recherche** par titre (insensible à la casse)
+- **Filtres** : Tout / Dépenses / Revenus
+- **Ajout** via le bouton **« + Ajouter »** en haut à droite
+
+---
+
+## Formulaire de transaction
+
+Champs disponibles : titre, montant (€), type (dépense / revenu), date (JJ/MM/AAAA), compte.
+
+---
+
+## Réglages
+
+### Apparence
+Bascule entre le thème sombre (par défaut) et le thème clair. Préférence sauvegardée localement.
 
 ### Comptes bancaires
-- Comptes courants (solde calculé depuis les transactions)
-- Comptes épargne (solde saisi manuellement)
-- Jusqu'à 10 comptes
-- Vue consolidée de tous les comptes
+Gestion de jusqu'à **15 comptes**. Pour chaque compte :
+- Type : **Courant** (💳) ou **Épargne** (💰)
+- Pour l'épargne : sous-type **Disponible** (livret A…) ou **Bloquée** (PEL, assurance vie…)
+- Réorganisation (↑ ↓) et suppression (🗑️ — irréversible, supprime aussi les transactions associées)
 
 ### Modèles récurrents
-- Un modèle par compte courant
-- Séparation mois pairs / mois impairs
-- Application en un clic depuis le tableau de bord
-- Tag "modèle" sur les transactions importées (disparaît si la transaction est éditée)
-- Nettoyage automatique des modèles lors de la suppression d'un compte
+Pré-configurez des opérations mensuelles répétitives, différenciées par parité du mois (pairs : 2, 4, 6… / impairs : 1, 3, 5…).
 
-### Autres
-- Thème clair / sombre
-- Nettoyage automatique des transactions du mois précédent (jour configurable)
-- Nettoyage manuel disponible dans les réglages
-- Déconnexion sécurisée
+> ℹ️ Un modèle ne peut être appliqué qu'une seule fois par mois et par compte.
 
----
+### Nettoyage automatique
+Supprime automatiquement les transactions des mois antérieurs à partir d'un jour configurable (1–31).
 
-## 🔧 Technologies
+> ⚠️ Choisir le 29, 30 ou 31 peut empêcher le déclenchement en février ou dans certains mois courts.
 
-| Composant | Technologie |
-|-----------|-------------|
-| Interface | React 18 (via CDN, sans build) |
-| Style | CSS variables, thème clair/sombre |
-| Police | DM Sans + DM Serif Display (Google Fonts) |
-| Auth | Firebase Authentication (Email/Password) |
-| Base de données | Firebase Firestore |
-| Hébergement | GitHub Pages (HTTPS automatique) |
+Un bouton **« 🗑️ Nettoyer les mois précédents maintenant »** permet un nettoyage manuel immédiat.
+
+### Instantanés d'épargne automatiques
+Configurez des jours du mois (ex. : 1 et 15) pour enregistrer automatiquement un snapshot du total de votre épargne.
 
 ---
 
-## 📁 Structure Firestore
+## Statistiques d'épargne
 
-```
-budgets/
-  {userId}/
-    transactions[]     → liste des transactions
-    accounts[]         → comptes bancaires
-    templates{}        → modèles par compte (pair/impair)
-    cleanupDay         → jour de nettoyage automatique
-```
+Accessible via le bouton **« 📈 Stats »** dans la section Comptes épargne du tableau de bord.
 
----
+Le graphique affiche deux séries chronologiques :
+- 🟢 **Épargne disponible** (Livret A, etc.)
+- 🔴 **Épargne bloquée** (PEL, assurance vie, etc.)
 
-## 🚀 Mise à jour de l'application
-
-1. Télécharger le nouveau fichier `budget.html`
-2. Le renommer en `index.html`
-3. Dans le dépôt GitHub → **Add file** → **Upload files**
-4. Déposer le fichier → **Commit changes**
-5. GitHub Pages se met à jour automatiquement en 1-2 minutes
+Ajout, modification (✎) et suppression (✕) d'instantanés possibles manuellement.
 
 ---
 
-## 🔐 Sécurité Firebase
+## Données & synchronisation
 
-Règles Firestore à configurer dans la console Firebase :
-
-```
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /budgets/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-  }
-}
-```
+- Synchronisation en temps réel via **Firebase** (délai max. 1 seconde).
+- Données stockées : transactions, comptes, modèles récurrents, historique d'épargne, préférences.
+- Chaque utilisateur accède **uniquement à ses propres données**.
 
 ---
 
-## 📦 Structure des données
+## FAQ
 
-### Transaction
-```json
-{
-  "id": "abc123",
-  "title": "Courses",
-  "amount": 87.50,
-  "type": "expense",
-  "accountId": "xyz789",
-  "date": "2026-02-17",
-  "note": "",
-  "pointed": false
-}
-```
+**L'application fonctionne-t-elle hors ligne ?**
+Non, une connexion internet est requise. Firebase peut mettre en cache certaines données, mais l'usage hors ligne n'est pas garanti.
 
-### Compte
-```json
-{
-  "id": "xyz789",
-  "name": "Compte courant",
-  "type": "checking",
-  "balance": 0
-}
-```
+**Y a-t-il une limite de transactions ?**
+Pas de limite fixe, mais les performances peuvent être affectées avec un très grand nombre d'entrées. Le nettoyage automatique est conçu pour maintenir la base légère.
 
-### Modèle (par compte)
-```json
-{
-  "{accountId}": {
-    "even": { "items": [{ "id": "...", "title": "Loyer", "amount": 950, "type": "expense" }] },
-    "odd":  { "items": [] }
-  }
-}
-```
+**Que se passe-t-il si je supprime un compte ?**
+La suppression est irréversible et entraîne la suppression de toutes les transactions et du modèle récurrent associés.
+
+**Comment réinitialiser les données démo ?**
+Dans les réglages (mode démo uniquement), le bouton **« Réinitialiser les données démo »** restaure les données d'exemple d'origine.
+
+**À quoi sert le pointage d'une transaction ?**
+Le pointage (✓ dorée) permet de marquer une transaction comme vérifiée sur votre relevé bancaire. C'est une aide au rapprochement bancaire, sans effet sur les calculs de solde.
+
+---
+
+*Mon Budget v1.0 — Février 2026*
