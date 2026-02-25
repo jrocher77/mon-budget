@@ -370,6 +370,8 @@ function useStore(uid, email) {
     // This prevents wiping data on iOS PWA reload when Firestore cache is empty.
     if (!uid || !ready || !trustedRef.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    // Mark save as pending immediately so echo guard works during the debounce window
+    lastSaveAt.current = Date.now();
     saveTimer.current = setTimeout(() => {
       // Clean undefined values that Firestore rejects
       const cleanTx = tx.map(t => {
@@ -377,7 +379,6 @@ function useStore(uid, email) {
         Object.keys(t).forEach(k => { if (t[k] !== undefined) clean[k] = t[k]; });
         return clean;
       });
-      lastSaveAt.current = Date.now();
       fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft });
     }, 1000);
   }, [uid, ready]);
@@ -459,6 +460,7 @@ function useStore(uid, email) {
   const addAccount    = ()          => { if (accounts.length>=15) return; setAccounts(p=>[...p,{id:genId(),name:`Nouveau compte ${p.length+1}`,type:"checking",balance:0}]); };
   const removeAccount = id => {
     if (accounts.length<=1) return;
+    if (!trustedRef.current) return; // SAFETY: never write to Firestore before data confirmed
     setAccounts(p => p.filter(a => a.id !== id));
     setTx(p => p.filter(t => t.accountId !== id));
     setTpl(p => { const next = {...p}; delete next[id]; return next; });
@@ -520,7 +522,7 @@ function useStore(uid, email) {
   // Runs once after Firestore data is fully loaded (loadedRef) to avoid
   // triggering with default values before real config is available.
   useEffect(() => {
-    if (!ready || !loadedRef.current) return;
+    if (!ready || !loadedRef.current || !trustedRef.current) return;
     if (!snapActiveRef.current) return;
     const savingsAccounts = accounts.filter(a => a.type === "savings");
     if (savingsAccounts.length === 0) return;
@@ -757,7 +759,7 @@ function App() {
   const [tab,        setTab]     = useState("dashboard");
   const [showForm,   setForm]    = useState(false);
   const [formAccount,setFormAcc] = useState(null);
-  const [theme,      setTheme]   = useState(() => localStorage.getItem("budget_theme") || "dark");
+  const [theme,      setTheme]   = useState(() => { try { return localStorage.getItem("budget_theme") || "dark"; } catch { return "dark"; } });
 
   const store = useStore(user?.uid, user?.email);
 
@@ -777,17 +779,19 @@ function App() {
     return onAuthStateChanged(auth, async u => {
       if (u) {
         // Check inactivity on auth state change (app open / tab focus)
-        const last = parseInt(localStorage.getItem(ACTIVITY_KEY) || "0", 10);
-        const elapsed = Date.now() - last;
-        if (last > 0 && elapsed > INACTIVITY_LIMIT) {
-          await signOut(auth);
-          localStorage.removeItem(ACTIVITY_KEY);
-          return;
-        }
-        // Record activity on fresh login
-        if (!last) localStorage.setItem(ACTIVITY_KEY, Date.now().toString());
+        try {
+          const last = parseInt(localStorage.getItem(ACTIVITY_KEY) || "0", 10);
+          const elapsed = Date.now() - last;
+          if (last > 0 && elapsed > INACTIVITY_LIMIT) {
+            await signOut(auth);
+            localStorage.removeItem(ACTIVITY_KEY);
+            return;
+          }
+          // Record activity on fresh login
+          if (!last) localStorage.setItem(ACTIVITY_KEY, Date.now().toString());
+        } catch { /* localStorage blocked in iOS private mode — skip inactivity check */ }
       } else {
-        localStorage.removeItem(ACTIVITY_KEY);
+        try { localStorage.removeItem(ACTIVITY_KEY); } catch { /* ignore */ }
       }
       setUser(u || null);
     });
@@ -836,7 +840,7 @@ function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("budget_theme", theme);
+    try { localStorage.setItem("budget_theme", theme); } catch { /* ignore */ }
   }, [theme]);
 
   if (user === undefined) return <LoadingScreen />;
