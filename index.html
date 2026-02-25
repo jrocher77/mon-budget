@@ -236,7 +236,41 @@ const DEMO_SAVINGS_HISTORY = [
   { id:"dsh5", date: (() => { const d=new Date(); d.setDate(1); return d.toISOString().split("T")[0]; })(),                             available:8500,  blocked:39750, auto:true,  note:"Intérêts assurance vie" },
 ];
 
-// ─── Firebase helpers ──────────────────────────────────────────────────────
+// ─── Debug Logger (visible on screen) ─────────────────────────────────────
+// Set to true to show the debug overlay on screen (useful for iOS debugging)
+const DEBUG_MODE = true;
+const _debugLogs = [];
+const _debugListeners = new Set();
+function dbg(msg) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const entry = `${ts} ${msg}`;
+  _debugLogs.push(entry);
+  if (_debugLogs.length > 60) _debugLogs.shift();
+  console.log("[DBG]", entry);
+  _debugListeners.forEach(fn => fn());
+}
+function DebugOverlay() {
+  const [, forceUpdate] = React.useReducer(x => x+1, 0);
+  React.useEffect(() => {
+    _debugListeners.add(forceUpdate);
+    return () => _debugListeners.delete(forceUpdate);
+  }, []);
+  const [visible, setVisible] = React.useState(true);
+  if (!DEBUG_MODE) return null;
+  return (
+    <div style={{ position:"fixed", bottom:90, left:8, right:8, zIndex:9999, pointerEvents:"none" }}>
+      <div style={{ background:"rgba(0,0,0,0.92)", borderRadius:8, border:"1px solid rgba(255,200,0,0.4)", maxHeight:220, overflowY:"auto", pointerEvents:"all" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 8px", borderBottom:"1px solid rgba(255,255,255,0.1)" }}>
+          <span style={{ fontSize:10, color:"#ffcc00", fontWeight:700, fontFamily:"monospace" }}>🔍 DEBUG LOG</span>
+          <button onClick={()=>setVisible(v=>!v)} style={{ background:"none", border:"none", color:"#aaa", fontSize:11 }}>{visible?"–":"+"}</button>
+        </div>
+        {visible && _debugLogs.slice().reverse().map((l,i) => (
+          <div key={i} style={{ padding:"2px 8px", fontSize:10, fontFamily:"monospace", color: l.includes("❌")?"#ff6b6b":l.includes("✅")?"#6bff9e":l.includes("⚠️")?"#ffcc00":"#ccc", borderBottom:"1px solid rgba(255,255,255,0.04)" }}>{l}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
 const fb = () => window._fb;
 
 function fbSubscribe(uid, onData, onError) {
@@ -290,14 +324,21 @@ function useStore(uid, email) {
     loadedRef.current       = false;
     hasReceivedData.current = false;
     trustedRef.current      = false;
+    dbg(`🔄 useStore init — uid=${uid.slice(0,8)}...`);
 
     const unsub = fbSubscribe(uid, data => {
       // Ignore echoes of our own saves (within 8 seconds)
-      if (loadedRef.current && Date.now() - lastSaveAt.current < 8000) return;
+      if (loadedRef.current && Date.now() - lastSaveAt.current < 8000) {
+        dbg(`⏭ Echo ignoré (${Math.round((Date.now()-lastSaveAt.current)/1000)}s depuis save)`);
+        return;
+      }
 
       if (data) {
+        const txCount = Array.isArray(data.transactions) ? data.transactions.length : "?";
+        const acCount = Array.isArray(data.accounts) ? data.accounts.length : "?";
+        dbg(`✅ Snapshot reçu — ${txCount} tx, ${acCount} comptes, loadedRef=${loadedRef.current}`);
         hasReceivedData.current = true;
-        trustedRef.current = true; // Firestore confirmed real data — persist is now allowed
+        trustedRef.current = true;
 
         // SAFETY: never fall back to SAMPLE_TX / DEFAULT_ACCOUNTS if the field is simply
         // missing or empty — that would silently overwrite real data on the next persist.
@@ -331,6 +372,7 @@ function useStore(uid, email) {
       } else if (!loadedRef.current && !hasReceivedData.current) {
         // Document truly absent (brand new account) → initialise with sample data.
         // SAFETY: double-guard — only runs if we have NEVER received real data from Firestore.
+        dbg(`⚠️ Snapshot null — nouveau compte → init SAMPLE_TX`);
         const initTx      = isDemo ? DEMO_TX      : SAMPLE_TX;
         const initAccts   = isDemo ? DEMO_ACCOUNTS : DEFAULT_ACCOUNTS;
         const initHistory = isDemo ? DEMO_SAVINGS_HISTORY : DEFAULT_SAVINGS_HISTORY;
@@ -344,16 +386,19 @@ function useStore(uid, email) {
 
       } else {
         // Document disappeared AFTER we had data → do NOT reinitialise.
+        dbg(`⚠️ Snapshot null ignoré (loadedRef=${loadedRef.current}, hasData=${hasReceivedData.current})`);
         console.warn("[useStore] Firestore returned null after data was loaded — ignoring to protect existing data.");
       }
 
       if (!loadedRef.current) {
         loadedRef.current = true;
+        dbg(`✅ ready=true, trustedRef=${trustedRef.current}`);
         setReady(true);
       }
     },
     err => {
       // Firestore error (permissions, network) — do NOT reinitialise, just unblock loading
+      dbg(`❌ Erreur Firestore: ${err.code} — trustedRef reste false`);
       console.error("[useStore] Firestore subscription error:", err.code);
       if (!loadedRef.current) {
         loadedRef.current = true;
@@ -368,7 +413,10 @@ function useStore(uid, email) {
   const persist = useCallback((tx, tpl, acct, cd, ac, sh, ssd, ssa, cdd, sft) => {
     // SAFETY: never write to Firestore before we've confirmed real data from the server.
     // This prevents wiping data on iOS PWA reload when Firestore cache is empty.
-    if (!uid || !ready || !trustedRef.current) return;
+    if (!uid || !ready || !trustedRef.current) {
+      if (!trustedRef.current) dbg(`⚠️ persist bloqué — trustedRef=false`);
+      return;
+    }
     if (saveTimer.current) clearTimeout(saveTimer.current);
     // Mark save as pending immediately so echo guard works during the debounce window
     lastSaveAt.current = Date.now();
@@ -379,6 +427,7 @@ function useStore(uid, email) {
         Object.keys(t).forEach(k => { if (t[k] !== undefined) clean[k] = t[k]; });
         return clean;
       });
+      dbg(`💾 Sauvegarde Firestore — ${cleanTx.length} tx, ${acct?.length} comptes`);
       fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft });
     }, 1000);
   }, [uid, ready]);
@@ -863,6 +912,7 @@ function App() {
             <p style={{ fontSize:12, fontWeight:700, color:"#0e0f13", letterSpacing:"0.04em" }}>MODE DÉMO — Les modifications sont visibles par tous les visiteurs</p>
           </div>
         )}
+        <DebugOverlay />
         <div style={{ flex:1, overflowY:"auto", paddingBottom:80 }}>
           {tab==="dashboard"     && <Dashboard    store={store} onAdd={handleOpenForm} onGoSavings={()=>setTab("savingsStats")} />}
           {tab==="transactions"  && <Transactions store={store} onAdd={handleOpenForm} />}
