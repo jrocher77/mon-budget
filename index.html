@@ -239,10 +239,17 @@ const DEMO_SAVINGS_HISTORY = [
 // ─── Firebase helpers ──────────────────────────────────────────────────────
 const fb = () => window._fb;
 
-function fbSubscribe(uid, onData) {
+function fbSubscribe(uid, onData, onError) {
   const { db, doc, onSnapshot } = fb();
   const ref = doc(db, "budgets", uid);
-  return onSnapshot(ref, snap => onData(snap.exists() ? snap.data() : null));
+  return onSnapshot(
+    ref,
+    snap => onData(snap.exists() ? snap.data() : null),
+    err  => {
+      console.error("[fbSubscribe] Firestore error:", err.code, err.message);
+      if (onError) onError(err);
+    }
+  );
 }
 
 async function fbSave(uid, data) {
@@ -270,19 +277,27 @@ function useStore(uid, email) {
   const [cardDebitDates,    setCardDebitDates]    = useState(DEFAULT_CARD_DEBIT_DATES);
   const [showFutureTx,      setShowFutureTx]      = useState(DEFAULT_SHOW_FUTURE_TX);
   const saveTimer = useRef(null);
-  const loadedRef = useRef(false); // true once Firestore data is fully loaded
-  const lastSaveAt = useRef(0);    // timestamp of last local save, to ignore echo
-  const hasReceivedData = useRef(false); // true once we've received a non-null document — guards against transient null
+  const loadedRef = useRef(false);      // true once Firestore first snapshot received
+  const lastSaveAt = useRef(0);         // timestamp of last local save, to ignore echo
+  const hasReceivedData = useRef(false);// true once we've received a non-null document
+  const trustedRef = useRef(false);     // true only after Firestore confirmed real data — persist is blocked until then
 
   // ── Subscribe to Firestore in real-time ─────────────────────────────────
   useEffect(() => {
     if (!uid) return;
+
+    // Reset all safety flags when uid changes (re-mount / auth oscillation on iOS)
+    loadedRef.current       = false;
+    hasReceivedData.current = false;
+    trustedRef.current      = false;
+
     const unsub = fbSubscribe(uid, data => {
       // Ignore echoes of our own saves (within 8 seconds)
       if (loadedRef.current && Date.now() - lastSaveAt.current < 8000) return;
 
       if (data) {
         hasReceivedData.current = true;
+        trustedRef.current = true; // Firestore confirmed real data — persist is now allowed
 
         // SAFETY: never fall back to SAMPLE_TX / DEFAULT_ACCOUNTS if the field is simply
         // missing or empty — that would silently overwrite real data on the next persist.
@@ -324,6 +339,7 @@ function useStore(uid, email) {
         setAccounts(initAccts);
         setSavingsHistory(initHistory);
         setCardDebitDates(initCdd);
+        trustedRef.current = true; // New account — we just wrote the initial data, persist is allowed
         fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX });
 
       } else {
@@ -335,13 +351,24 @@ function useStore(uid, email) {
         loadedRef.current = true;
         setReady(true);
       }
+    },
+    err => {
+      // Firestore error (permissions, network) — do NOT reinitialise, just unblock loading
+      console.error("[useStore] Firestore subscription error:", err.code);
+      if (!loadedRef.current) {
+        loadedRef.current = true;
+        setReady(true);
+        // trustedRef stays false → persist remains blocked
+      }
     });
     return () => unsub();
   }, [uid]);
 
   // ── Auto-save to Firestore (debounced 1s) ───────────────────────────────
   const persist = useCallback((tx, tpl, acct, cd, ac, sh, ssd, ssa, cdd, sft) => {
-    if (!uid || !ready) return;
+    // SAFETY: never write to Firestore before we've confirmed real data from the server.
+    // This prevents wiping data on iOS PWA reload when Firestore cache is empty.
+    if (!uid || !ready || !trustedRef.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       // Clean undefined values that Firestore rejects
@@ -372,7 +399,8 @@ function useStore(uid, email) {
   };
 
   useEffect(() => {
-    if (!ready || !autoCleanup) return;
+    // SAFETY: do not run cleanup before Firestore has confirmed real data
+    if (!ready || !autoCleanup || !trustedRef.current) return;
     const today = new Date();
     const currentDay = today.getDate();
     if (currentDay >= cleanupDay) {
