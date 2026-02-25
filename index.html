@@ -237,36 +237,86 @@ const DEMO_SAVINGS_HISTORY = [
 ];
 
 // ─── Debug Logger (visible on screen) ─────────────────────────────────────
-// Set to true to show the debug overlay on screen (useful for iOS debugging)
-const DEBUG_MODE = true;
 const _debugLogs = [];
 const _debugListeners = new Set();
-function dbg(msg) {
-  const ts = new Date().toISOString().slice(11, 23);
-  const entry = `${ts} ${msg}`;
-  _debugLogs.push(entry);
-  if (_debugLogs.length > 60) _debugLogs.shift();
-  console.log("[DBG]", entry);
+
+function _isDebugEnabled() {
+  try { return localStorage.getItem("budget_debug") === "1"; } catch { return false; }
+}
+function _setDebugEnabled(v) {
+  try { if (v) localStorage.setItem("budget_debug","1"); else localStorage.removeItem("budget_debug"); } catch {}
   _debugListeners.forEach(fn => fn());
 }
+
+function dbg(msg) {
+  const ts = new Date().toISOString().slice(11, 23);
+  const entry = { ts, msg, time: Date.now() };
+  _debugLogs.push(entry);
+  if (_debugLogs.length > 120) _debugLogs.shift();
+  console.log("[DBG]", ts, msg);
+  _debugListeners.forEach(fn => fn());
+}
+
 function DebugOverlay() {
   const [, forceUpdate] = React.useReducer(x => x+1, 0);
+  const [collapsed, setCollapsed] = React.useState(false);
+  const [filter, setFilter] = React.useState("");
+  const listRef = React.useRef(null);
+
   React.useEffect(() => {
     _debugListeners.add(forceUpdate);
     return () => _debugListeners.delete(forceUpdate);
   }, []);
-  const [visible, setVisible] = React.useState(true);
-  if (!DEBUG_MODE) return null;
+
+  if (!_isDebugEnabled()) return null;
+
+  const filtered = _debugLogs.filter(l => !filter || l.msg.toLowerCase().includes(filter.toLowerCase()));
+  const rows = filtered.slice().reverse();
+
+  const copyAll = () => {
+    const text = _debugLogs.map(l => `${l.ts} ${l.msg}`).join("\n");
+    try { navigator.clipboard.writeText(text); } catch {}
+  };
+
+  const lineColor = (msg) => {
+    if (msg.includes("❌")) return "#ff6b6b";
+    if (msg.includes("✅")) return "#6bff9e";
+    if (msg.includes("⚠️")) return "#ffcc00";
+    if (msg.includes("💾")) return "#80cfff";
+    if (msg.includes("🔄") || msg.includes("🛑")) return "#c9a84c";
+    if (msg.includes("🐢") || msg.includes("🔁")) return "#ff9966";
+    return "#bbb";
+  };
+
   return (
-    <div style={{ position:"fixed", bottom:90, left:8, right:8, zIndex:9999, pointerEvents:"none" }}>
-      <div style={{ background:"rgba(0,0,0,0.92)", borderRadius:8, border:"1px solid rgba(255,200,0,0.4)", maxHeight:220, overflowY:"auto", pointerEvents:"all" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 8px", borderBottom:"1px solid rgba(255,255,255,0.1)" }}>
-          <span style={{ fontSize:10, color:"#ffcc00", fontWeight:700, fontFamily:"monospace" }}>🔍 DEBUG LOG</span>
-          <button onClick={()=>setVisible(v=>!v)} style={{ background:"none", border:"none", color:"#aaa", fontSize:11 }}>{visible?"–":"+"}</button>
+    <div style={{ position:"fixed", bottom:88, left:6, right:6, zIndex:9999 }}>
+      <div style={{ background:"rgba(10,10,14,0.97)", borderRadius:10, border:"1px solid rgba(201,168,76,0.35)", boxShadow:"0 4px 24px rgba(0,0,0,0.6)", overflow:"hidden" }}>
+        {/* Header */}
+        <div style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 10px", borderBottom:"1px solid rgba(255,255,255,0.08)", background:"rgba(255,255,255,0.03)" }}>
+          <span style={{ fontSize:11, color:"#c9a84c", fontWeight:700, fontFamily:"monospace", flex:1 }}>🔍 DEBUG — {_debugLogs.length} entrées</span>
+          <input
+            value={filter} onChange={e=>setFilter(e.target.value)}
+            placeholder="Filtrer…"
+            style={{ fontSize:10, padding:"2px 6px", borderRadius:4, border:"1px solid rgba(255,255,255,0.15)", background:"rgba(255,255,255,0.07)", color:"#eee", width:80, fontFamily:"monospace" }}
+          />
+          <button onClick={copyAll} title="Copier tout" style={{ background:"none", border:"none", color:"#888", fontSize:12, padding:"0 2px", cursor:"pointer" }}>📋</button>
+          <button onClick={()=>{ _debugLogs.length=0; forceUpdate(); }} title="Effacer" style={{ background:"none", border:"none", color:"#888", fontSize:12, padding:"0 2px", cursor:"pointer" }}>🗑</button>
+          <button onClick={()=>setCollapsed(c=>!c)} style={{ background:"none", border:"none", color:"#888", fontSize:13, padding:"0 2px", cursor:"pointer" }}>{collapsed?"▲":"▼"}</button>
         </div>
-        {visible && _debugLogs.slice().reverse().map((l,i) => (
-          <div key={i} style={{ padding:"2px 8px", fontSize:10, fontFamily:"monospace", color: l.includes("❌")?"#ff6b6b":l.includes("✅")?"#6bff9e":l.includes("⚠️")?"#ffcc00":"#ccc", borderBottom:"1px solid rgba(255,255,255,0.04)" }}>{l}</div>
-        ))}
+        {/* Log list */}
+        {!collapsed && (
+          <div ref={listRef} style={{ maxHeight:200, overflowY:"auto" }}>
+            {rows.length === 0
+              ? <div style={{ padding:"10px 12px", fontSize:11, color:"#555", fontFamily:"monospace" }}>Aucun log</div>
+              : rows.map((l,i) => (
+                <div key={i} style={{ padding:"3px 10px", display:"flex", gap:8, borderBottom:"1px solid rgba(255,255,255,0.03)", alignItems:"flex-start" }}>
+                  <span style={{ fontSize:9, color:"#555", fontFamily:"monospace", whiteSpace:"nowrap", paddingTop:2, flexShrink:0 }}>{l.ts}</span>
+                  <span style={{ fontSize:10, fontFamily:"monospace", color:lineColor(l.msg), lineHeight:1.5, wordBreak:"break-word" }}>{l.msg}</span>
+                </div>
+              ))
+            }
+          </div>
+        )}
       </div>
     </div>
   );
@@ -288,7 +338,13 @@ function fbSubscribe(uid, onData, onError) {
 
 async function fbSave(uid, data) {
   const { db, doc, setDoc } = fb();
-  await setDoc(doc(db, "budgets", uid), data, { merge: true });
+  try {
+    await setDoc(doc(db, "budgets", uid), data, { merge: true });
+    dbg(`✅ Firestore setDoc OK`);
+  } catch(e) {
+    dbg(`❌ Firestore setDoc ERREUR: ${e.code || e.message}`);
+    throw e;
+  }
 }
 
 // ─── Auth Context ──────────────────────────────────────────────────────────
@@ -316,6 +372,9 @@ function useStore(uid, email) {
   const hasReceivedData = useRef(false);// true once we've received a non-null document
   const trustedRef = useRef(false);     // true only after Firestore confirmed real data — persist is blocked until then
   const nullGraceTimer = useRef(null);  // delays new-account init to allow real data to arrive after null cache snapshot
+  const [slowConnection, setSlowConnection] = useState(false);
+  const slowTimer = useRef(null);       // shows slow connection UI after 4s
+  const [retryCount, setRetryCount] = useState(0); // incrementing restarts subscription
 
   // ── Subscribe to Firestore in real-time ─────────────────────────────────
   useEffect(() => {
@@ -326,7 +385,17 @@ function useStore(uid, email) {
     hasReceivedData.current = false;
     trustedRef.current      = false;
     if (nullGraceTimer.current) { clearTimeout(nullGraceTimer.current); nullGraceTimer.current = null; }
-    dbg(`🔄 useStore init — uid=${uid.slice(0,8)}...`);
+    if (slowTimer.current) { clearTimeout(slowTimer.current); slowTimer.current = null; }
+    setSlowConnection(false);
+    dbg(`🔄 useStore init — uid=${uid.slice(0,8)}... retry=${retryCount}`);
+
+    // Show slow connection UI after 4s without any Firestore response
+    slowTimer.current = setTimeout(() => {
+      if (!loadedRef.current) {
+        dbg(`🐢 Connexion lente — affichage écran d'attente`);
+        setSlowConnection(true);
+      }
+    }, 4000);
 
     const unsub = fbSubscribe(uid, data => {
       // Ignore echoes of our own saves (within 8 seconds)
@@ -353,6 +422,8 @@ function useStore(uid, email) {
           nullGraceTimer.current = null;
           dbg(`🛑 Grace timer annulé — vraies données reçues`);
         }
+        if (slowTimer.current) { clearTimeout(slowTimer.current); slowTimer.current = null; }
+        setSlowConnection(false);
 
         hasReceivedData.current = true;
         trustedRef.current = true;
@@ -441,8 +512,8 @@ function useStore(uid, email) {
         // trustedRef stays false → persist remains blocked
       }
     });
-    return () => { unsub(); if (nullGraceTimer.current) { clearTimeout(nullGraceTimer.current); nullGraceTimer.current = null; } };
-  }, [uid]);
+    return () => { unsub(); if (nullGraceTimer.current) { clearTimeout(nullGraceTimer.current); nullGraceTimer.current = null; } if (slowTimer.current) { clearTimeout(slowTimer.current); slowTimer.current = null; } };
+  }, [uid, retryCount]);
 
   // ── Auto-save to Firestore (debounced 1s) ───────────────────────────────
   const persist = useCallback((tx, tpl, acct, cd, ac, sh, ssd, ssa, cdd, sft) => {
@@ -489,6 +560,7 @@ function useStore(uid, email) {
     const today = new Date();
     const currentDay = today.getDate();
     if (currentDay >= cleanupDay) {
+      dbg(`🧹 Nettoyage auto déclenché (jour ${currentDay} >= ${cleanupDay})`);
       doCleanup(cardDebitDates);
     }
   }, [ready, autoCleanup, cleanupDay, cardDebitDates]);
@@ -632,7 +704,7 @@ function useStore(uid, email) {
     savingsSnapDays, setSavingsSnapDays, savingsSnapActive, setSavingsSnapActive,
     cardDebitDates, setCardDebitDate, clearCardDebitDate,
     showFutureTx, setShowFutureTx,
-    isDemo };
+    isDemo, slowConnection, retry: () => setRetryCount(c => c+1) };
 }
 
 // ─── Magic Word Hash (SHA-256 — le mot n'apparaît pas en clair) ────────────
@@ -837,6 +909,44 @@ function LoadingScreen() {
   );
 }
 
+function SlowConnectionScreen({ onRetry }) {
+  const [retrying, setRetrying] = useState(false);
+  const handleRetry = () => {
+    setRetrying(true);
+    dbg("Retry demande par l'utilisateur");
+    onRetry();
+    setTimeout(() => setRetrying(false), 3000);
+  };
+  return (
+    <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:24, background:"var(--bg)", padding:32 }}>
+      <div style={{ width:72, height:72, borderRadius:"50%", background:"var(--surface)", border:"1px solid var(--border2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:32 }}>
+        {String.fromCodePoint(0x1F4F6)}
+      </div>
+      <div style={{ textAlign:"center", display:"flex", flexDirection:"column", gap:8 }}>
+        <p style={{ fontSize:18, fontWeight:700, color:"var(--text)" }}>Connexion lente</p>
+        <p style={{ fontSize:14, color:"var(--text-muted)", lineHeight:1.6, maxWidth:280 }}>
+          Le serveur met plus de temps que prévu à répondre. Vérifiez votre connexion internet puis réessayez.
+        </p>
+      </div>
+      <button onClick={handleRetry} disabled={retrying} style={{
+          background: retrying ? "var(--surface2)" : "var(--gold)",
+          color: retrying ? "var(--text-muted)" : "#0e0f13",
+          border:"none", borderRadius:50, padding:"14px 32px",
+          fontSize:15, fontWeight:700, cursor: retrying ? "default" : "pointer",
+          display:"flex", alignItems:"center", gap:10, transition:"all 0.2s",
+          minWidth:180, justifyContent:"center" }}>
+        {retrying
+          ? <><div className="spinner" style={{ width:16, height:16, border:"2px solid var(--border2)", borderTopColor:"var(--text-muted)", borderRadius:"50%", flexShrink:0 }} />{" "}Connexion…</>
+          : "↺ Réessayer"
+        }
+      </button>
+      <p style={{ fontSize:12, color:"var(--text-sub)", textAlign:"center", maxWidth:260 }}>
+        Vos données sont en sécurité sur le serveur et ne seront pas modifiées.
+      </p>
+    </div>
+  );
+}
+
 // ─── App ───────────────────────────────────────────────────────────────────
 function App() {
   const [user,       setUser]    = useState(undefined); // undefined = checking, null = not logged in
@@ -934,7 +1044,10 @@ function App() {
     </ThemeCtx.Provider>
   );
 
-  if (!store.ready) return <LoadingScreen />;
+  if (!store.ready) {
+    if (store.slowConnection) return <ThemeCtx.Provider value={{ theme, toggle:()=>setTheme(t=>t==="dark"?"light":"dark") }}><SlowConnectionScreen onRetry={store.retry} /></ThemeCtx.Provider>;
+    return <LoadingScreen />;
+  }
 
   const handleOpenForm = (account=null) => { setFormAcc(account); setForm(true); };
 
@@ -1915,6 +2028,16 @@ function Settings({ store, user }) {
           </div>
           <div style={{ borderTop:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px" }}>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ fontSize:22 }}>🐛</span>
+              <div>
+                <p style={{ fontSize:14, fontWeight:500 }}>Console de debug</p>
+                <p style={{ fontSize:12, color:"var(--text-muted)" }}>Affiche les logs techniques en bas de l'écran</p>
+              </div>
+            </div>
+            <Toggle checked={_isDebugEnabled()} onChange={()=>{ _setDebugEnabled(!_isDebugEnabled()); window.location.reload(); }} />
+          </div>
+          <div style={{ borderTop:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               <span style={{ fontSize:22 }}>📅</span>
               <div>
                 <p style={{ fontSize:14, fontWeight:500 }}>Transactions futures dans l'historique</p>
@@ -2884,6 +3007,7 @@ function waitForFb(cb) {
   else setTimeout(()=>waitForFb(cb), 50);
 }
 waitForFb(()=>{
+  dbg(`🚀 App montée — ${new Date().toISOString()}`);
   ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 });
 </script>
