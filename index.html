@@ -11,7 +11,14 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Mon Budget" />
+  <!-- Préconnexions pour réduire la latence des ressources critiques -->
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <!-- Préchargement des scripts bloquants pour les télécharger en parallèle -->
+  <link rel="preload" as="script" href="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin />
+  <link rel="preload" as="script" href="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin />
+  <link rel="preload" as="script" href="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
 
   <!-- Firebase -->
@@ -38,6 +45,8 @@
 
     // ── Expose Firebase to app ──────────────────────────────────────────────
     window._fb = { auth, db, doc, getDoc, setDoc, onSnapshot, deleteField, signInWithEmailAndPassword, signOut, onAuthStateChanged };
+    // Résout la Promise que l'app attend — pas de polling nécessaire
+    if (window._fbResolve) window._fbResolve();
   </script>
 
   <!-- React + Babel -->
@@ -1588,7 +1597,20 @@ function Dashboard({ store, onAdd, onGoSavings }) {
     t => t.accountId === selectedAccountId && t._transferFrom === sel
   );
 
-  const [showTransferConfirm, setShowTransferConfirm] = useState(false);
+  const [showTransferConfirm,   setShowTransferConfirm]   = useState(false);
+  const [showUnpointedWarning,  setShowUnpointedWarning]  = useState(false);
+
+  // Transactions du mois source non-pointées (hors carte et hors reports)
+  const unpointedTxs = useMemo(() => {
+    if (selectedAccountId === "all") return [];
+    return store.transactions.filter(t =>
+      t.accountId === selectedAccountId &&
+      mKey(t.date) === sel &&
+      !t.isCard &&
+      !t._transferFrom &&
+      !t.pointed
+    );
+  }, [store.transactions, selectedAccountId, sel]);
 
   const accountBalances = useMemo(() => {
     if (selectedAccountId!=="all") return { checking:[], savings:[] };
@@ -1679,7 +1701,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
               </div>
               {!isSavings && sel <= nowMKey() && (
                 <button
-                  onClick={() => setShowTransferConfirm(true)}
+                  onClick={() => unpointedTxs.length > 0 ? setShowUnpointedWarning(true) : setShowTransferConfirm(true)}
                   title={`Reporter le solde vers ${nextMonthName}`}
                   style={{ flexShrink:0, marginTop:2, padding:"6px 11px", borderRadius:8,
                     background: transferExists ? "rgba(201,168,76,0.15)" : "rgba(255,255,255,0.07)",
@@ -1799,6 +1821,34 @@ function Dashboard({ store, onAdd, onGoSavings }) {
       {editingTx && <FormModal store={store} transaction={editingTx} onClose={()=>setEditingTx(null)} />}
       {deletingTx && <DeleteModal tx={deletingTx} onCancel={()=>setDeletingTx(null)} onConfirm={()=>{store.remove(deletingTx.id);setDeletingTx(null);}} />}
       {cardFormAccount && <FormModal store={store} account={cardFormAccount} isCardTransaction onClose={()=>setCardFormAccount(null)} />}
+
+      {/* Unpointed transactions warning modal */}
+      {showUnpointedWarning && (
+        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={e=>e.target===e.currentTarget&&setShowUnpointedWarning(false)}>
+          <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid rgba(224,92,92,0.4)", padding:24 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+              <span style={{ fontSize:22 }}>⚠️</span>
+              <p style={{ fontSize:18, fontWeight:600, color:"var(--red)" }}>Report impossible</p>
+            </div>
+            <p style={{ fontSize:13, color:"var(--text-muted)", lineHeight:1.7, marginBottom:8 }}>
+              <strong style={{ color:"var(--text)" }}>{unpointedTxs.length} transaction{unpointedTxs.length > 1 ? "s" : ""}</strong> du mois de <strong style={{ color:"var(--text)" }}>{new Date(sel+"-02T00:00:00").toLocaleDateString("fr-FR",{month:"long",year:"numeric"})}</strong> {unpointedTxs.length > 1 ? "ne sont pas pointées" : "n'est pas pointée"}.
+            </p>
+            <p style={{ fontSize:13, color:"var(--text-muted)", lineHeight:1.7, marginBottom:20 }}>
+              Pointez toutes les transactions du mois avant de reporter le solde.
+            </p>
+            <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:"10px 12px", marginBottom:20, maxHeight:160, overflowY:"auto" }}>
+              {unpointedTxs.map((t,i) => (
+                <div key={t.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom: i<unpointedTxs.length-1?"1px solid var(--border)":"none" }}>
+                  <span style={{ fontSize:12, color:"var(--text-sub)" }}>{t.title}</span>
+                  <span style={{ fontSize:12, fontWeight:600, color:t.type==="income"?"var(--green)":"var(--red)" }}>{t.type==="income"?"+":"-"}{fmtEur(t.amount)}</span>
+                </div>
+              ))}
+            </div>
+            <button onClick={()=>setShowUnpointedWarning(false)} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600, cursor:"pointer" }}>Fermer</button>
+          </div>
+        </div>
+      )}
 
       {/* Transfer confirmation modal */}
       {showTransferConfirm && (
@@ -2536,6 +2586,28 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
   const [asCard,   setAsCard]   = useState(startAsCard);
   const [error,    setError]    = useState("");
 
+  // Ajustement de montant (mode édition uniquement)
+  const [adjValue,  setAdjValue]  = useState("");   // valeur saisie (abs)
+  const [adjSign,   setAdjSign]   = useState("+");  // "+" ou "-"
+  const adjNum = parseFloat(adjValue.replace(",","."));
+  const baseNum = parseFloat(amount.replace(",","."));
+  const adjResult = (!isNaN(baseNum) && !isNaN(adjNum) && adjValue.trim() !== "")
+    ? (adjSign === "+" ? baseNum + adjNum : baseNum - adjNum)
+    : null;
+  const adjResultValid = adjResult !== null && adjResult !== 0;
+  // Le résultat bascule le type si négatif
+  const adjFlipsType  = adjResultValid && adjResult < 0;
+  const adjFinalType  = adjFlipsType ? (type === "expense" ? "income" : "expense") : type;
+  const adjFinalAmt   = adjResultValid ? Math.round(Math.abs(adjResult) * 100) / 100 : null;
+
+  const applyAdj = () => {
+    if (!adjResultValid) return;
+    setAmount(String(adjFinalAmt));
+    if (adjFlipsType) setType(adjFinalType);
+    setAdjValue("");
+    setAdjSign("+");
+  };
+
   // Check if the selected account has a card
   const selAcct = store.accounts.find(a=>a.id===selAcctId);
   const acctHasCard = selAcct?.type==="checking" && selAcct?.cardName;
@@ -2581,6 +2653,63 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
                 style={{ fontSize:34, fontFamily:"'DM Serif Display',serif", flex:1, color:type==="expense"?"var(--red)":"var(--green)" }} />
             </div>
           </div>
+
+          {/* ── Ajustement (édition uniquement, hors carte et hors report) ── */}
+          {isEditing && !transaction?.isCard && !transaction?._transferFrom && (
+            <div style={{ background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"12px 14px" }}>
+              <p style={{ fontSize:11, color:"var(--text-sub)", fontWeight:600, letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:10 }}>Ajustement</p>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                {/* Boutons +/− */}
+                <div style={{ display:"flex", flexDirection:"column", gap:4, flexShrink:0 }}>
+                  {["+","-"].map(s=>{
+                    const isExpense = type === "expense";
+                    const btnColor = s === "+" ? (isExpense ? "var(--red)" : "var(--green)") : (isExpense ? "var(--green)" : "var(--red)");
+                    const btnBg    = s === "+" ? (isExpense ? "rgba(224,92,92,0.18)" : "rgba(76,175,130,0.18)") : (isExpense ? "rgba(76,175,130,0.18)" : "rgba(224,92,92,0.18)");
+                    return (
+                      <button key={s} onClick={()=>setAdjSign(s)}
+                        style={{ width:32, height:32, borderRadius:8, fontSize:18, fontWeight:700, cursor:"pointer",
+                          background: adjSign===s ? btnBg : "var(--surface)",
+                          border: adjSign===s ? `1px solid ${btnColor}` : "1px solid var(--border)",
+                          color: adjSign===s ? btnColor : "var(--text-muted)",
+                          display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>
+                        {s}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Champ valeur */}
+                <input value={adjValue} onChange={e=>setAdjValue(e.target.value)} placeholder="0,00" inputMode="decimal"
+                  style={{ flex:1, fontSize:22, fontFamily:"'DM Serif Display',serif",
+                    color: adjSign==="+" ? (type==="expense"?"var(--red)":"var(--green)") : (type==="expense"?"var(--green)":"var(--red)"),
+                    background:"var(--surface)", border:"1px solid var(--border)", borderRadius:8,
+                    padding:"6px 10px", minWidth:0 }} />
+                {/* Résultat + bouton appliquer */}
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, flexShrink:0 }}>
+                  {adjResultValid ? (
+                    <span style={{ fontSize:11, whiteSpace:"nowrap", textAlign:"right", lineHeight:1.5 }}>
+                      <span style={{ color: adjFinalType==="expense"?"var(--red)":"var(--green)", fontWeight:700 }}>
+                        = {fmtEur(adjFinalAmt)}
+                      </span>
+                      {adjFlipsType && (
+                        <span style={{ display:"block", color:"var(--gold)", fontSize:10 }}>
+                          ⚡ bascule en {adjFinalType==="income"?"revenu":"dépense"}
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize:11, color:"var(--text-muted)", whiteSpace:"nowrap" }}>= —</span>
+                  )}
+                  <button onClick={applyAdj} disabled={!adjResultValid}
+                    style={{ padding:"5px 12px", borderRadius:8, fontSize:12, fontWeight:700, whiteSpace:"nowrap", cursor: adjResultValid?"pointer":"not-allowed",
+                      background: adjResultValid?"linear-gradient(135deg,var(--gold-light),var(--gold))":"var(--surface)",
+                      border: adjResultValid?"none":"1px solid var(--border)",
+                      color: adjResultValid?"#0e0f13":"var(--text-muted)", opacity: adjResultValid?1:0.5 }}>
+                    Appliquer
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <Field label="Libellé"><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex : Courses, Salaire…" style={{ fontSize:15, width:"100%", padding:"0 2px" }} /></Field>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
             <Field label="Compte">
@@ -3001,12 +3130,13 @@ function SavingsStats({ store, onBack }) {
 }
 
 // ─── Mount ─────────────────────────────────────────────────────────────────
-// Wait for Firebase to initialize before mounting React
-function waitForFb(cb) {
-  if (window._fb) cb();
-  else setTimeout(()=>waitForFb(cb), 50);
-}
-waitForFb(()=>{
+// Attend que Firebase soit prêt via une Promise (résolution instantanée,
+// sans polling à 50ms). Si Firebase est déjà chargé, résout immédiatement.
+const fbReadyPromise = window._fb
+  ? Promise.resolve()
+  : new Promise(resolve => { window._fbResolve = resolve; });
+
+fbReadyPromise.then(() => {
   dbg(`🚀 App montée — ${new Date().toISOString()}`);
   ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 });
