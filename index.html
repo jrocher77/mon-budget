@@ -315,6 +315,7 @@ function useStore(uid, email) {
   const lastSaveAt = useRef(0);         // timestamp of last local save, to ignore echo
   const hasReceivedData = useRef(false);// true once we've received a non-null document
   const trustedRef = useRef(false);     // true only after Firestore confirmed real data — persist is blocked until then
+  const nullGraceTimer = useRef(null);  // delays new-account init to allow real data to arrive after null cache snapshot
 
   // ── Subscribe to Firestore in real-time ─────────────────────────────────
   useEffect(() => {
@@ -324,6 +325,7 @@ function useStore(uid, email) {
     loadedRef.current       = false;
     hasReceivedData.current = false;
     trustedRef.current      = false;
+    if (nullGraceTimer.current) { clearTimeout(nullGraceTimer.current); nullGraceTimer.current = null; }
     dbg(`🔄 useStore init — uid=${uid.slice(0,8)}...`);
 
     const unsub = fbSubscribe(uid, data => {
@@ -337,6 +339,21 @@ function useStore(uid, email) {
         const txCount = Array.isArray(data.transactions) ? data.transactions.length : "?";
         const acCount = Array.isArray(data.accounts) ? data.accounts.length : "?";
         dbg(`✅ Snapshot reçu — ${txCount} tx, ${acCount} comptes, loadedRef=${loadedRef.current}`);
+
+        // CRITICAL: cancel any pending save that may have been triggered by a null snapshot
+        // (e.g. null snapshot arrived first due to slow network, then real data arrives 12ms later)
+        if (saveTimer.current) {
+          clearTimeout(saveTimer.current);
+          saveTimer.current = null;
+          dbg(`🛑 Timer de sauvegarde annulé — vraies données reçues`);
+        }
+        // Cancel null grace timer — real data has arrived, no need to init as new account
+        if (nullGraceTimer.current) {
+          clearTimeout(nullGraceTimer.current);
+          nullGraceTimer.current = null;
+          dbg(`🛑 Grace timer annulé — vraies données reçues`);
+        }
+
         hasReceivedData.current = true;
         trustedRef.current = true;
 
@@ -370,19 +387,37 @@ function useStore(uid, email) {
         snapActiveRef.current = data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE;
 
       } else if (!loadedRef.current && !hasReceivedData.current) {
-        // Document truly absent (brand new account) → initialise with sample data.
-        // SAFETY: double-guard — only runs if we have NEVER received real data from Firestore.
-        dbg(`⚠️ Snapshot null — nouveau compte → init SAMPLE_TX`);
-        const initTx      = isDemo ? DEMO_TX      : SAMPLE_TX;
-        const initAccts   = isDemo ? DEMO_ACCOUNTS : DEFAULT_ACCOUNTS;
-        const initHistory = isDemo ? DEMO_SAVINGS_HISTORY : DEFAULT_SAVINGS_HISTORY;
-        const initCdd     = isDemo ? DEMO_CARD_DEBIT_DATES : DEFAULT_CARD_DEBIT_DATES;
-        setTx(initTx);
-        setAccounts(initAccts);
-        setSavingsHistory(initHistory);
-        setCardDebitDates(initCdd);
-        trustedRef.current = true; // New account — we just wrote the initial data, persist is allowed
-        fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX });
+        // Null snapshot received before any real data.
+        // CRITICAL: on iOS PWA with slow network, Firebase SDK can emit a null cache snapshot
+        // BEFORE the real server data arrives (observed: null at t=0, real data at t+12ms).
+        // We wait 3 seconds before treating this as a genuinely new account.
+        dbg(`⚠️ Snapshot null reçu — attente 3s avant init (nouveau compte ?)`);
+
+        if (nullGraceTimer.current) return; // already waiting
+        nullGraceTimer.current = setTimeout(() => {
+          nullGraceTimer.current = null;
+          // If real data arrived during the grace period, hasReceivedData is now true → abort
+          if (hasReceivedData.current) {
+            dbg(`✅ Grace: vraies données arrivées entre-temps — init annulée`);
+            return;
+          }
+          // Still no data after 3s → genuinely new account
+          dbg(`⚠️ Grace expirée — init nouveau compte avec SAMPLE_TX`);
+          const initTx      = isDemo ? DEMO_TX      : SAMPLE_TX;
+          const initAccts   = isDemo ? DEMO_ACCOUNTS : DEFAULT_ACCOUNTS;
+          const initHistory = isDemo ? DEMO_SAVINGS_HISTORY : DEFAULT_SAVINGS_HISTORY;
+          const initCdd     = isDemo ? DEMO_CARD_DEBIT_DATES : DEFAULT_CARD_DEBIT_DATES;
+          setTx(initTx);
+          setAccounts(initAccts);
+          setSavingsHistory(initHistory);
+          setCardDebitDates(initCdd);
+          trustedRef.current = true; // New account — we just wrote the initial data, persist is allowed
+          if (!loadedRef.current) { loadedRef.current = true; dbg(`✅ ready=true (nouveau compte)`); setReady(true); }
+          fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX });
+        }, 3000);
+
+        // Don't set ready yet — we're waiting for real data or the grace timer
+        return;
 
       } else {
         // Document disappeared AFTER we had data → do NOT reinitialise.
@@ -406,7 +441,7 @@ function useStore(uid, email) {
         // trustedRef stays false → persist remains blocked
       }
     });
-    return () => unsub();
+    return () => { unsub(); if (nullGraceTimer.current) { clearTimeout(nullGraceTimer.current); nullGraceTimer.current = null; } };
   }, [uid]);
 
   // ── Auto-save to Firestore (debounced 1s) ───────────────────────────────
