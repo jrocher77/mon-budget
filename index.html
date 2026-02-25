@@ -122,6 +122,23 @@ function nowMKey() {
 function isEven(mk){ return parseInt(mk.split("-")[1],10) % 2 === 0; }
 function dBack(n)  { const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().split("T")[0]; }
 
+// ─── Template variable resolver ────────────────────────────────────────────
+// Supported variables: $month, $Month, $mm, $year / $Year / $yyyy
+function resolveTplVars(str, monthK) {
+  if (!str || !monthK) return str;
+  const [yyyy, mm] = monthK.split("-");
+  const date = new Date(Number(yyyy), Number(mm) - 1, 1);
+  const monthLower = date.toLocaleDateString("fr-FR", { month: "long" });           // février
+  const monthUpper = monthLower.charAt(0).toUpperCase() + monthLower.slice(1);      // Février
+  return str
+    .replace(/\$Month/g, monthUpper)
+    .replace(/\$month/g, monthLower)
+    .replace(/\$mm/g,    mm)
+    .replace(/\$yyyy/g,  yyyy)
+    .replace(/\$Year/g,  yyyy)
+    .replace(/\$year/g,  yyyy);
+}
+
 // ─── Default data ──────────────────────────────────────────────────────────
 // ─── UI Feature flags ──────────────────────────────────────────────────────
 // Mettre à false pour revenir à l'ancien comportement (header normal non-sticky)
@@ -398,7 +415,16 @@ function useStore(uid, email) {
     if (transactions.some(t => t._tpl===monthK && t.accountId===accountId)) return;
     setTx(p => [...items.map(item => {
       const day = String(item.day || 1).padStart(2, '0');
-      return {...item, id:genId(), date:monthK+"-"+day, accountId, _tpl:monthK};
+      return {
+        ...item,
+        id:      genId(),
+        date:    monthK+"-"+day,
+        accountId,
+        _tpl:    monthK,
+        // Resolve template variables in title and note
+        title:   resolveTplVars(item.title, monthK),
+        ...(item.note ? { note: resolveTplVars(item.note, monthK) } : {}),
+      };
     }), ...p]);
   };
 
@@ -2234,6 +2260,9 @@ function TplAddModal({ onClose, onSave, item }) {
           <Field label="Libellé">
             <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex: Loyer, Salaire…" style={{ fontSize:15, width:"100%" }} />
           </Field>
+          <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:-6, paddingLeft:2 }}>
+            Variables disponibles : <span style={{ fontFamily:"monospace", color:"var(--gold)", opacity:0.8 }}>$month</span> · <span style={{ fontFamily:"monospace", color:"var(--gold)", opacity:0.8 }}>$Month</span> · <span style={{ fontFamily:"monospace", color:"var(--gold)", opacity:0.8 }}>$mm</span> · <span style={{ fontFamily:"monospace", color:"var(--gold)", opacity:0.8 }}>$year</span>
+          </p>
           <Field label="Jour du mois">
             <select value={day} onChange={e=>setDay(e.target.value)} style={{ fontSize:15, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
               {Array.from({length:28},(_,i)=>i+1).map(d=>(
