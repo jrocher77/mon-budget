@@ -160,6 +160,8 @@ const DEFAULT_SAVINGS_SNAP_DAYS   = [1, 15];
 const DEFAULT_SAVINGS_SNAP_ACTIVE = true;
 const DEFAULT_CARD_DEBIT_DATES = {}; // { [accountId]: { [monthKey]: dateString } }
 const DEFAULT_SHOW_FUTURE_TX = true;
+// benefitData: { [accountId]: { allotments: { [monthKey]: { mode:"amount"|"units", amount?:number, count?:number, unitValue?:number } }, expenses: [ {id, title, amount, date} ] } }
+const DEFAULT_BENEFIT_DATA = {};
 const DEFAULT_ACCOUNTS = [
   { id: genId(), name: "Compte courant", type: "checking", balance: 0 },
 ];
@@ -182,7 +184,33 @@ const DEMO_ACCOUNTS = [
   { id:"da3", name:"Livret A",         type:"savings",  balance:8500,    savingsSubtype:"available" },
   { id:"da4", name:"PEL",              type:"savings",  balance:24000,   savingsSubtype:"blocked"   },
   { id:"da5", name:"Assurance vie",    type:"savings",  balance:15750,   savingsSubtype:"blocked"   },
+  { id:"da6", name:"Ticket Restaurant",type:"benefit" },
 ];
+// Demo benefit data: allotments and expenses for da6 over 2 months
+const DEMO_BENEFIT_DATA = (() => {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const curMk  = `${now.getFullYear()}-${pad(now.getMonth()+1)}`;
+  const prevM  = now.getMonth() === 0 ? 11 : now.getMonth()-1;
+  const prevY  = now.getMonth() === 0 ? now.getFullYear()-1 : now.getFullYear();
+  const prevMk = `${prevY}-${pad(prevM+1)}`;
+  const d = (n) => { const dt=new Date(); dt.setDate(dt.getDate()-n); return dt.toISOString().split("T")[0]; };
+  return {
+    da6: {
+      allotments: {
+        [prevMk]: { mode:"units", count:20, unitValue:9.25 },
+        [curMk]:  { mode:"units", count:20, unitValue:9.25 },
+      },
+      expenses: [
+        { id:"dbe1", title:"Boulangerie", amount:8.50,  date:d(35) },
+        { id:"dbe2", title:"Sushi",        amount:14.90, date:d(28) },
+        { id:"dbe3", title:"Sandwicherie", amount:9.20,  date:d(22) },
+        { id:"dbe4", title:"Cantine",      amount:11.60, date:d(5)  },
+        { id:"dbe5", title:"Boulangerie",  amount:7.80,  date:d(3)  },
+      ],
+    },
+  };
+})();
 const DEMO_TX = [
   // Mois courant — da1
   { id:"dt01", title:"Salaire",          amount:3200,   type:"income",  date:dBack(2),  accountId:"da1", pointed:true  },
@@ -375,6 +403,7 @@ function useStore(uid, email) {
   const [savingsSnapActive, setSavingsSnapActive] = useState(DEFAULT_SAVINGS_SNAP_ACTIVE);
   const [cardDebitDates,    setCardDebitDates]    = useState(DEFAULT_CARD_DEBIT_DATES);
   const [showFutureTx,      setShowFutureTx]      = useState(DEFAULT_SHOW_FUTURE_TX);
+  const [benefitData,       setBenefitData]       = useState(DEFAULT_BENEFIT_DATA); // { [accountId]: { allotments:{}, expenses:[] } }
   const saveTimer = useRef(null);
   const loadedRef = useRef(false);      // true once Firestore first snapshot received
   const lastSaveAt = useRef(0);         // timestamp of last local save, to ignore echo
@@ -463,6 +492,7 @@ function useStore(uid, email) {
         setSavingsSnapActive(data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE);
         setCardDebitDates(data.cardDebitDates || DEFAULT_CARD_DEBIT_DATES);
         setShowFutureTx(data.showFutureTx !== undefined ? data.showFutureTx : DEFAULT_SHOW_FUTURE_TX);
+        setBenefitData(data.benefitData || DEFAULT_BENEFIT_DATA);
         snapDaysRef.current   = data.savingsSnapDays   || DEFAULT_SAVINGS_SNAP_DAYS;
         snapActiveRef.current = data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE;
 
@@ -487,13 +517,15 @@ function useStore(uid, email) {
           const initAccts   = isDemo ? DEMO_ACCOUNTS : DEFAULT_ACCOUNTS;
           const initHistory = isDemo ? DEMO_SAVINGS_HISTORY : DEFAULT_SAVINGS_HISTORY;
           const initCdd     = isDemo ? DEMO_CARD_DEBIT_DATES : DEFAULT_CARD_DEBIT_DATES;
+          const initBd      = isDemo ? DEMO_BENEFIT_DATA : DEFAULT_BENEFIT_DATA;
           setTx(initTx);
           setAccounts(initAccts);
           setSavingsHistory(initHistory);
           setCardDebitDates(initCdd);
+          setBenefitData(initBd);
           trustedRef.current = true; // New account — we just wrote the initial data, persist is allowed
           if (!loadedRef.current) { loadedRef.current = true; dbg(`✅ ready=true (nouveau compte)`); setReady(true); }
-          fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX });
+          fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX, benefitData:initBd });
         }, 3000);
 
         // Don't set ready yet — we're waiting for real data or the grace timer
@@ -525,7 +557,7 @@ function useStore(uid, email) {
   }, [uid, retryCount]);
 
   // ── Auto-save to Firestore (debounced 1s) ───────────────────────────────
-  const persist = useCallback((tx, tpl, acct, cd, ac, sh, ssd, ssa, cdd, sft) => {
+  const persist = useCallback((tx, tpl, acct, cd, ac, sh, ssd, ssa, cdd, sft, bd) => {
     // SAFETY: never write to Firestore before we've confirmed real data from the server.
     // This prevents wiping data on iOS PWA reload when Firestore cache is empty.
     if (!uid || !ready || !trustedRef.current) {
@@ -543,13 +575,14 @@ function useStore(uid, email) {
         return clean;
       });
       dbg(`💾 Sauvegarde Firestore — ${cleanTx.length} tx, ${acct?.length} comptes`);
-      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft });
+      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft, benefitData: bd });
     }, 1000);
   }, [uid, ready]);
 
   // ── Auto-cleanup ────────────────────────────────────────────────────────
-  const doCleanup = (cdd) => {
+  const doCleanup = useCallback((cdd, bd) => {
     const currentKey = nowMKey();
+    // Cleanup regular transactions (unchanged)
     setTx(prev => {
       const filtered = prev.filter(t => {
         if (mKey(t.date) >= currentKey) return true;
@@ -561,7 +594,25 @@ function useStore(uid, email) {
       });
       return filtered.length !== prev.length ? filtered : prev;
     });
-  };
+    // Cleanup benefitData: remove expenses and allotments strictly before current month
+    if (bd && Object.keys(bd).length > 0) {
+      setBenefitData(prev => {
+        let changed = false;
+        const next = {};
+        Object.entries(prev).forEach(([accountId, acct]) => {
+          const expenses  = (acct.expenses  || []).filter(e => mKey(e.date) >= currentKey);
+          const allotments = Object.fromEntries(
+            Object.entries(acct.allotments || {}).filter(([mk]) => mk >= currentKey)
+          );
+          const expChanged = expenses.length  !== (acct.expenses  || []).length;
+          const allChanged = Object.keys(allotments).length !== Object.keys(acct.allotments || {}).length;
+          if (expChanged || allChanged) changed = true;
+          next[accountId] = { allotments, expenses };
+        });
+        return changed ? next : prev;
+      });
+    }
+  }, []);
 
   useEffect(() => {
     // SAFETY: do not run cleanup before Firestore has confirmed real data
@@ -570,13 +621,13 @@ function useStore(uid, email) {
     const currentDay = today.getDate();
     if (currentDay >= cleanupDay) {
       dbg(`🧹 Nettoyage auto déclenché (jour ${currentDay} >= ${cleanupDay})`);
-      doCleanup(cardDebitDates);
+      doCleanup(cardDebitDates, benefitData);
     }
-  }, [ready, autoCleanup, cleanupDay, cardDebitDates]);
+  }, [ready, autoCleanup, cleanupDay, cardDebitDates, benefitData, doCleanup]);
 
   // ── Persist on every state change ───────────────────────────────────────
-  useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx); },
-    [transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, ready, persist]);
+  useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData); },
+    [transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData, ready, persist]);
 
   // ── Actions ─────────────────────────────────────────────────────────────
   const add    = tx  => setTx(p => [{ ...tx, id:genId(), pointed:false }, ...p]);
@@ -629,9 +680,11 @@ function useStore(uid, email) {
     setAccounts(p => p.filter(a => a.id !== id));
     setTx(p => p.filter(t => t.accountId !== id));
     setTpl(p => { const next = {...p}; delete next[id]; return next; });
-    // Explicitly delete the template field in Firestore (merge:true won't delete missing fields)
+    // Clean up benefitData for this account (benefit accounts have no transactions in setTx)
+    setBenefitData(p => { const next = {...p}; delete next[id]; return next; });
+    // Explicitly delete nested fields in Firestore (merge:true won't delete missing fields)
     const { db, doc, setDoc, deleteField } = fb();
-    setDoc(doc(db, "budgets", uid), { templates: { [id]: deleteField() } }, { merge: true });
+    setDoc(doc(db, "budgets", uid), { templates: { [id]: deleteField() }, benefitData: { [id]: deleteField() } }, { merge: true });
   };
   const updateAccount = (id,updates)=> setAccounts(p=>p.map(a=>a.id===id?{...a,...updates}:a));
   const moveAccount   = (id, dir) => {
@@ -653,7 +706,7 @@ function useStore(uid, email) {
   };
   const updateCleanupDay  = day  => setCleanupDay(day);
   const updateAutoCleanup = val  => setAutoCleanup(val);
-  const cleanupMonth  = () => doCleanup(cardDebitDates);
+  const cleanupMonth  = () => doCleanup(cardDebitDates, benefitData);
 
   // ── Card debit dates actions ─────────────────────────────────────────────
   // cardDebitDates: { [accountId]: { [monthKey]: "YYYY-MM-DD" } }
@@ -668,6 +721,43 @@ function useStore(uid, email) {
       const acct = { ...(prev[accountId]||{}) };
       delete acct[monthKey];
       return { ...prev, [accountId]: acct };
+    });
+  };
+
+  // ── Benefit data actions ─────────────────────────────────────────────────
+  // benefitData: { [accountId]: { allotments: { [monthKey]: {mode,amount?,count?,unitValue?} }, expenses: [{id,title,amount,date}] } }
+  const getBenefitAcct = (bd, accountId) => bd[accountId] || { allotments: {}, expenses: [] };
+
+  const setBenefitAllotment = (accountId, monthKey, allotment) => {
+    setBenefitData(prev => {
+      const acct = getBenefitAcct(prev, accountId);
+      return { ...prev, [accountId]: { ...acct, allotments: { ...acct.allotments, [monthKey]: allotment } } };
+    });
+  };
+  const clearBenefitAllotment = (accountId, monthKey) => {
+    setBenefitData(prev => {
+      const acct = getBenefitAcct(prev, accountId);
+      const allotments = { ...acct.allotments };
+      delete allotments[monthKey];
+      return { ...prev, [accountId]: { ...acct, allotments } };
+    });
+  };
+  const addBenefitExpense = (accountId, expense) => {
+    setBenefitData(prev => {
+      const acct = getBenefitAcct(prev, accountId);
+      return { ...prev, [accountId]: { ...acct, expenses: [...acct.expenses, { ...expense, id: genId() }] } };
+    });
+  };
+  const removeBenefitExpense = (accountId, expenseId) => {
+    setBenefitData(prev => {
+      const acct = getBenefitAcct(prev, accountId);
+      return { ...prev, [accountId]: { ...acct, expenses: acct.expenses.filter(e => e.id !== expenseId) } };
+    });
+  };
+  const updateBenefitExpense = (accountId, expenseId, updates) => {
+    setBenefitData(prev => {
+      const acct = getBenefitAcct(prev, accountId);
+      return { ...prev, [accountId]: { ...acct, expenses: acct.expenses.map(e => e.id === expenseId ? { ...e, ...updates } : e) } };
     });
   };
 
@@ -713,6 +803,7 @@ function useStore(uid, email) {
     savingsSnapDays, setSavingsSnapDays, savingsSnapActive, setSavingsSnapActive,
     cardDebitDates, setCardDebitDate, clearCardDebitDate,
     showFutureTx, setShowFutureTx,
+    benefitData, setBenefitAllotment, clearBenefitAllotment, addBenefitExpense, removeBenefitExpense, updateBenefitExpense,
     isDemo, slowConnection, retry: () => setRetryCount(c => c+1) };
 }
 
@@ -1374,6 +1465,331 @@ function CardPanel({ account, sel, cardTxM, cardTotal, cardDebitDate, isDebitNex
   );
 }
 
+// ─── BenefitModal ──────────────────────────────────────────────────────────
+// Helper: compute allotment amount from allotment config
+function allotmentAmount(allotment) {
+  if (!allotment) return 0;
+  if (allotment.mode === "units") return (allotment.count || 0) * (allotment.unitValue || 0);
+  return allotment.amount || 0;
+}
+
+// Helper: get previous month key
+function prevMonthKey(mk) {
+  const [y, m] = mk.split("-").map(Number);
+  const pm = m === 1 ? 12 : m - 1;
+  const py = m === 1 ? y - 1 : y;
+  return `${py}-${String(pm).padStart(2,'0')}`;
+}
+
+// Compute carry-over balance for a given month: sum up from all previous months
+// carryover = allotment(prev months) - expenses(prev months), propagated
+function computeCarryOver(benefitAcct, upToMonthKey) {
+  // Collect all month keys in benefitAcct that are strictly before upToMonthKey
+  const allMonths = new Set([
+    ...Object.keys(benefitAcct.allotments || {}),
+    ...(benefitAcct.expenses || []).map(e => mKey(e.date)),
+  ]);
+  const pastMonths = [...allMonths].filter(mk => mk < upToMonthKey).sort();
+  let carry = 0;
+  for (const mk of pastMonths) {
+    const all = allotmentAmount(benefitAcct.allotments?.[mk]);
+    const exp = (benefitAcct.expenses || []).filter(e => mKey(e.date) === mk).reduce((s,e) => s + e.amount, 0);
+    carry = carry + all - exp;
+    if (carry < 0) carry = 0; // can't carry negative balance
+  }
+  return carry;
+}
+
+function BenefitModal({ store, account, onClose }) {
+  const [sel,          setSel]          = useState(nowMKey());
+  const [editAllotment,setEditAllotment]= useState(false);
+  const [draftMode,    setDraftMode]    = useState("units");
+  const [draftAmount,  setDraftAmount]  = useState("");
+  const [draftCount,   setDraftCount]   = useState("");
+  const [draftUnit,    setDraftUnit]    = useState("");
+  const [addingExp,    setAddingExp]    = useState(false);
+  const [expTitle,     setExpTitle]     = useState("");
+  const [expAmount,    setExpAmount]    = useState("");
+  const [expDate,      setExpDate]      = useState(() => new Date().toISOString().split("T")[0]);
+  const [editingExp,   setEditingExp]   = useState(null); // expense id being edited
+  const [deletingExp,  setDeletingExp]  = useState(null);
+
+  const benefitAcct = store.benefitData[account.id] || { allotments: {}, expenses: [] };
+  const allotment   = benefitAcct.allotments?.[sel];
+  const allotted    = allotmentAmount(allotment);
+  const carryOver   = computeCarryOver(benefitAcct, sel);
+  const monthExp    = (benefitAcct.expenses || []).filter(e => mKey(e.date) === sel).sort((a,b)=>b.date.localeCompare(a.date));
+  const totalExp    = monthExp.reduce((s,e) => s + e.amount, 0);
+  const available   = carryOver + allotted - totalExp;
+
+  // Build month list: past months with remaining data + current + next 2
+  const months = useMemo(() => {
+    const today = new Date();
+    const Y = today.getFullYear(), M = today.getMonth();
+    const fmt = (y,m) => `${y}-${String(m+1).padStart(2,'0')}`;
+    const currentKey = fmt(Y, M);
+    // Past months that still have expenses or allotments
+    const pastWithData = new Set();
+    (benefitAcct.expenses || []).forEach(e => {
+      const mk = mKey(e.date);
+      if (mk < currentKey) pastWithData.add(mk);
+    });
+    Object.keys(benefitAcct.allotments || {}).forEach(mk => {
+      if (mk < currentKey) pastWithData.add(mk);
+    });
+    const result = [...pastWithData].sort();
+    result.push(fmt(Y, M));
+    for (let i = 1; i <= 2; i++) {
+      const d = new Date(Y, M + i, 1);
+      result.push(fmt(d.getFullYear(), d.getMonth()));
+    }
+    return result;
+  }, [benefitAcct.expenses, benefitAcct.allotments]);
+
+  const openAllotmentEdit = () => {
+    setDraftMode(allotment?.mode || "units");
+    setDraftAmount(allotment?.mode === "amount" ? String(allotment.amount || "") : "");
+    setDraftCount(allotment?.mode === "units" ? String(allotment.count || "") : "");
+    setDraftUnit(allotment?.mode === "units"
+      ? String(allotment.unitValue || "")
+      : String(account.defaultUnitValue || ""));
+    setEditAllotment(true);
+  };
+
+  const saveAllotment = () => {
+    if (draftMode === "amount") {
+      const v = parseFloat(draftAmount.replace(",","."));
+      if (isNaN(v) || v <= 0) return;
+      store.setBenefitAllotment(account.id, sel, { mode:"amount", amount: Math.round(v*100)/100 });
+    } else {
+      const c = parseFloat(draftCount.replace(",","."));
+      const u = parseFloat(draftUnit.replace(",","."));
+      if (isNaN(c) || isNaN(u) || c <= 0 || u <= 0) return;
+      store.setBenefitAllotment(account.id, sel, { mode:"units", count: Math.round(c*100)/100, unitValue: Math.round(u*100)/100 });
+    }
+    setEditAllotment(false);
+  };
+
+  const saveExpense = () => {
+    const v = parseFloat(expAmount.replace(",","."));
+    if (!expTitle.trim() || isNaN(v) || v <= 0 || !expDate) return;
+    if (editingExp) {
+      store.updateBenefitExpense(account.id, editingExp, { title: expTitle.trim(), amount: Math.round(v*100)/100, date: expDate });
+      setEditingExp(null);
+    } else {
+      store.addBenefitExpense(account.id, { title: expTitle.trim(), amount: Math.round(v*100)/100, date: expDate });
+    }
+    setExpTitle(""); setExpAmount(""); setExpDate(new Date().toISOString().split("T")[0]);
+    setAddingExp(false);
+  };
+
+  const openEditExp = (exp) => {
+    setEditingExp(exp.id);
+    setExpTitle(exp.title);
+    setExpAmount(String(exp.amount));
+    setExpDate(exp.date);
+    setAddingExp(true);
+  };
+
+  const monthLabel = mk => new Date(mk+"-02T00:00:00").toLocaleDateString("fr-FR",{month:"short",year:"2-digit"});
+
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:300, background:"rgba(0,0,0,0.75)", backdropFilter:"blur(6px)", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"flex-end" }}
+      onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="scale-in" style={{ width:"100%", maxWidth:480, background:"var(--surface)", borderRadius:"var(--radius) var(--radius) 0 0", border:"1px solid var(--border)", maxHeight:"90vh", display:"flex", flexDirection:"column", overflow:"hidden" }}>
+
+        {/* Header */}
+        <div style={{ display:"flex", alignItems:"center", gap:12, padding:"16px 16px 12px", borderBottom:"1px solid var(--border)", background:"linear-gradient(160deg,#1a1c25,#12131a)", flexShrink:0 }}>
+          <span style={{ fontSize:24 }}>🎫</span>
+          <div style={{ flex:1 }}>
+            <p style={{ fontSize:17, fontWeight:700, color:"var(--header-text)", fontFamily:"'DM Serif Display',serif" }}>{account.name}</p>
+            <p style={{ fontSize:11, color:"var(--header-muted)" }}>Avantage salarial</p>
+          </div>
+          <button onClick={onClose} style={{ background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.12)", borderRadius:8, width:30, height:30, color:"var(--header-muted)", fontSize:16, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+        </div>
+
+        {/* Month tabs */}
+        <div style={{ display:"flex", gap:6, overflowX:"auto", padding:"10px 16px 6px", flexShrink:0 }} className="scroll-row">
+          {months.map(mk=>(
+            <button key={mk} onClick={()=>{setSel(mk);setEditAllotment(false);setAddingExp(false);}}
+              style={{ flexShrink:0, padding:"5px 13px", borderRadius:20, border:"1px solid", borderColor:sel===mk?"var(--gold)":"var(--border)", background:sel===mk?"var(--gold-dim)":"var(--surface2)", color:sel===mk?"var(--gold)":"var(--text-muted)", fontSize:12, fontWeight:600 }}>
+              {monthLabel(mk)}
+            </button>
+          ))}
+        </div>
+
+        {/* Scrollable body */}
+        <div style={{ overflowY:"auto", flex:1, padding:"12px 16px 24px", display:"flex", flexDirection:"column", gap:12 }}>
+
+          {/* Balance card */}
+          <div style={{ background: available >= 0 ? "linear-gradient(135deg,#1e2a1e,#162216)" : "linear-gradient(135deg,#2a1e1e,#221616)", border:`1px solid ${available>=0?"rgba(76,175,130,0.3)":"rgba(224,92,92,0.3)"}`, borderRadius:"var(--radius)", padding:"16px" }}>
+            <p style={{ fontSize:11, fontWeight:500, color:"rgba(240,236,228,0.5)", letterSpacing:"0.08em", textTransform:"uppercase", marginBottom:6 }}>Solde disponible</p>
+            <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:32, color:available>=0?"#4caf82":"#e05c5c", letterSpacing:"-0.02em" }}>{fmtEur(available)}</p>
+            <div style={{ display:"flex", gap:16, marginTop:10, flexWrap:"wrap" }}>
+              {carryOver > 0 && <span style={{ fontSize:11, color:"rgba(240,236,228,0.5)" }}>↩ Report {fmtEur(carryOver)}</span>}
+              {allotted > 0  && <span style={{ fontSize:11, color:"rgba(240,236,228,0.5)" }}>+ Dotation {fmtEur(allotted)}</span>}
+              {totalExp > 0  && <span style={{ fontSize:11, color:"rgba(240,236,228,0.5)" }}>− Dépensé {fmtEur(totalExp)}</span>}
+            </div>
+          </div>
+
+          {/* Dotation section */}
+          <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", overflow:"hidden" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", borderBottom: editAllotment ? "1px solid var(--border)" : "none" }}>
+              <div>
+                <p style={{ fontSize:13, fontWeight:600 }}>Dotation du mois</p>
+                {allotment ? (
+                  <p style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>
+                    {allotment.mode === "units"
+                      ? `${allotment.count} × ${fmtEur(allotment.unitValue)} = ${fmtEur(allotted)}`
+                      : fmtEur(allotted)}
+                  </p>
+                ) : (
+                  <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:2, fontStyle:"italic" }}>Non définie</p>
+                )}
+              </div>
+              {!editAllotment && (
+                <button onClick={openAllotmentEdit}
+                  style={{ padding:"5px 12px", borderRadius:8, background:"var(--gold-dim)", border:"1px solid rgba(201,168,76,0.3)", color:"var(--gold)", fontSize:12, fontWeight:600 }}>
+                  {allotment ? "✎ Modifier" : "+ Définir"}
+                </button>
+              )}
+            </div>
+
+            {editAllotment && (
+              <div style={{ padding:"12px 14px", display:"flex", flexDirection:"column", gap:10 }}>
+                {/* Mode toggle */}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+                  {[["units","Titres × valeur"],["amount","Montant fixe"]].map(([m,l])=>(
+                    <button key={m} onClick={()=>setDraftMode(m)}
+                      style={{ padding:"8px", borderRadius:8, border:"1px solid", borderColor:draftMode===m?"var(--gold)":"var(--border)", background:draftMode===m?"var(--gold-dim)":"var(--bg)", color:draftMode===m?"var(--gold)":"var(--text-muted)", fontSize:12, fontWeight:600 }}>{l}</button>
+                  ))}
+                </div>
+                {draftMode === "units" ? (
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                    <div>
+                      <label style={{ fontSize:10, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Nb de titres</label>
+                      <input type="number" step="1" min="0" value={draftCount} onChange={e=>setDraftCount(e.target.value)} placeholder="20" inputMode="decimal"
+                        style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize:10, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Valeur unitaire (€)</label>
+                      <input type="number" step="0.01" min="0" value={draftUnit} onChange={e=>setDraftUnit(e.target.value)} placeholder="9.25" inputMode="decimal"
+                        style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label style={{ fontSize:10, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Montant (€)</label>
+                    <input type="number" step="0.01" min="0" value={draftAmount} onChange={e=>setDraftAmount(e.target.value)} placeholder="185.00" inputMode="decimal"
+                      style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+                  </div>
+                )}
+                {draftMode === "units" && draftCount && draftUnit && !isNaN(parseFloat(draftCount)) && !isNaN(parseFloat(draftUnit)) && (
+                  <p style={{ fontSize:12, color:"var(--gold)", fontWeight:600 }}>= {fmtEur(parseFloat(draftCount)*parseFloat(draftUnit))}</p>
+                )}
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={saveAllotment} style={{ flex:2, padding:"9px", borderRadius:8, background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:13, fontWeight:700 }}>✓ Enregistrer</button>
+                  <button onClick={()=>setEditAllotment(false)} style={{ flex:1, padding:"9px", borderRadius:8, background:"var(--surface3)", border:"1px solid var(--border)", color:"var(--text-muted)", fontSize:13 }}>Annuler</button>
+                  {allotment && <button onClick={()=>{store.clearBenefitAllotment(account.id,sel);setEditAllotment(false);}} style={{ padding:"9px 12px", borderRadius:8, background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13 }}>✕</button>}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Expenses section */}
+          <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", overflow:"hidden" }}>
+            <div style={{ padding:"12px 14px", borderBottom:"1px solid var(--border)" }}>
+              <p style={{ fontSize:13, fontWeight:600 }}>Dépenses du mois</p>
+            </div>
+
+            {monthExp.length === 0 && !addingExp && (
+              <div style={{ padding:"16px", textAlign:"center" }}>
+                <p style={{ fontSize:12, color:"var(--text-sub)", fontStyle:"italic" }}>Aucune dépense ce mois-ci</p>
+              </div>
+            )}
+
+            {monthExp.map((exp, i) => (
+              <div key={exp.id}>
+                {i > 0 && <div style={{ height:1, background:"var(--border)", margin:"0 14px" }} />}
+                <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px" }}>
+                  <div style={{ width:32, height:32, borderRadius:8, background:"var(--red-dim)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, flexShrink:0 }}>↑</div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <p style={{ fontSize:13, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{exp.title}</p>
+                    <p style={{ fontSize:11, color:"var(--text-sub)" }}>{fmtDate(exp.date)}</p>
+                  </div>
+                  <p style={{ fontSize:14, fontWeight:700, color:"var(--red)", flexShrink:0 }}>−{fmtEur(exp.amount)}</p>
+                  <button onClick={()=>openEditExp(exp)} style={{ background:"var(--gold-dim)", border:"none", borderRadius:7, width:26, height:26, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--gold)", fontSize:13, flexShrink:0 }}>✎</button>
+                  <button onClick={()=>setDeletingExp(exp)} style={{ background:"var(--red-dim)", border:"none", borderRadius:7, width:26, height:26, display:"flex", alignItems:"center", justifyContent:"center", color:"var(--red)", fontSize:13, flexShrink:0 }}>✕</button>
+                </div>
+              </div>
+            ))}
+
+            {/* Add/Edit expense form */}
+            {addingExp && (
+              <div style={{ padding:"12px 14px", borderTop: monthExp.length > 0 ? "1px solid var(--border)" : "none", display:"flex", flexDirection:"column", gap:8 }}>
+                <input value={expTitle} onChange={e=>setExpTitle(e.target.value)} placeholder="Intitulé (ex: Boulangerie)"
+                  style={{ fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                  <input type="number" step="0.01" min="0" value={expAmount} onChange={e=>setExpAmount(e.target.value)} placeholder="Montant (€)" inputMode="decimal"
+                    style={{ fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+                  <input type="date" value={expDate} onChange={e=>setExpDate(e.target.value)}
+                    style={{ fontSize:13, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)", colorScheme:"var(--colorscheme)" }} />
+                </div>
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={saveExpense} style={{ flex:2, padding:"9px", borderRadius:8, background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:13, fontWeight:700 }}>✓ {editingExp ? "Modifier" : "Ajouter"}</button>
+                  <button onClick={()=>{setAddingExp(false);setEditingExp(null);setExpTitle("");setExpAmount("");setExpDate(new Date().toISOString().split("T")[0]);}} style={{ flex:1, padding:"9px", borderRadius:8, background:"var(--surface3)", border:"1px solid var(--border)", color:"var(--text-muted)", fontSize:13 }}>Annuler</button>
+                </div>
+              </div>
+            )}
+
+            {!addingExp && (
+              <div style={{ padding:"10px 14px 14px", borderTop: monthExp.length > 0 ? "1px solid var(--border)" : "none" }}>
+                <button onClick={()=>{setAddingExp(true);setEditingExp(null);setExpTitle("");setExpAmount("");setExpDate(new Date().toISOString().split("T")[0]);}}
+                  style={{ width:"100%", padding:"9px", borderRadius:"var(--radius-sm)", background:"rgba(201,168,76,0.06)", border:"1px dashed rgba(201,168,76,0.4)", color:"var(--gold)", fontSize:13, fontWeight:600, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                  <span style={{ fontSize:15 }}>＋</span> Ajouter une dépense
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Carry-over info */}
+          {(() => {
+            const nextMk = (() => { const [y,m]=sel.split("-").map(Number); const nm=m===12?1:m+1; const ny=m===12?y+1:y; return `${ny}-${String(nm).padStart(2,'0')}`; })();
+            const remaining = allotted + carryOver - totalExp;
+            if (remaining <= 0) return null;
+            return (
+              <div style={{ display:"flex", gap:10, padding:"10px 14px", background:"rgba(76,175,130,0.08)", border:"1px solid rgba(76,175,130,0.2)", borderRadius:"var(--radius-sm)", alignItems:"center" }}>
+                <span style={{ fontSize:16 }}>↩</span>
+                <p style={{ fontSize:12, color:"var(--green)", lineHeight:1.5 }}>
+                  <strong>{fmtEur(remaining)}</strong> seront automatiquement reportés sur {new Date(nextMk+"-02T00:00:00").toLocaleDateString("fr-FR",{month:"long",year:"numeric"})}.
+                </p>
+              </div>
+            );
+          })()}
+
+        </div>
+      </div>
+
+      {/* Delete expense confirm */}
+      {deletingExp && (
+        <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+          onClick={e=>e.target===e.currentTarget&&setDeletingExp(null)}>
+          <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
+            <p style={{ fontSize:18, fontWeight:600, marginBottom:12 }}>Supprimer la dépense</p>
+            <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
+              Voulez-vous supprimer « {deletingExp.title} » ({fmtEur(deletingExp.amount)}) ?
+            </p>
+            <div style={{ display:"flex", gap:10 }}>
+              <button onClick={()=>setDeletingExp(null)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
+              <button onClick={()=>{store.removeBenefitExpense(account.id,deletingExp.id);setDeletingExp(null);}} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Dashboard ─────────────────────────────────────────────────────────────
 function SavingsBalanceRow({ account, balance, store }) {
   const [editing, setEditing] = useState(false);
@@ -1477,6 +1893,20 @@ function Dashboard({ store, onAdd, onGoSavings }) {
   const [deletingTx,       setDeletingTx]     = useState(null);
   const [clickedTxId,      setClickedTxId]    = useState(null);
   const [cardFormAccount,  setCardFormAccount] = useState(null); // accountId for card add form
+  const [benefitAccount,   setBenefitAccount] = useState(null); // account to show in BenefitModal
+
+  // Benefit accounts + current month balance for header button
+  const benefitAccounts = store.accounts.filter(a => a.type === "benefit");
+  const benefitHeaderBalance = useMemo(() => {
+    return benefitAccounts.reduce((total, acc) => {
+      const bd = store.benefitData[acc.id] || { allotments: {}, expenses: [] };
+      const mk = nowMKey();
+      const carry  = computeCarryOver(bd, mk);
+      const allotted = allotmentAmount(bd.allotments?.[mk]);
+      const exp    = (bd.expenses || []).filter(e => mKey(e.date) === mk).reduce((s,e) => s + e.amount, 0);
+      return total + carry + allotted - exp;
+    }, 0);
+  }, [store.benefitData, store.accounts]);
 
   const months = useMemo(() => {
     const today = new Date();
@@ -1667,7 +2097,24 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
   return (
     <div>
-      <PageHeader title="Mon Budget" />
+      <PageHeader title="Mon Budget">
+        {benefitAccounts.length > 0 && (
+          <div style={{ display:"flex", justifyContent:"flex-end" }}>
+            <button
+              onClick={()=>setBenefitAccount(benefitAccounts.length === 1 ? benefitAccounts[0] : benefitAccounts[0])}
+              style={{ display:"flex", alignItems:"center", gap:5, padding:"5px 11px", borderRadius:20,
+                background:"rgba(76,175,130,0.12)", border:"1px solid rgba(76,175,130,0.35)",
+                color: benefitHeaderBalance >= 0 ? "var(--green)" : "var(--red)",
+                fontSize:12, fontWeight:700, letterSpacing:"0.01em", flexShrink:0 }}>
+              <span style={{ fontSize:14 }}>🎫</span>
+              <span style={{ fontSize:11, fontWeight:700, letterSpacing:"0.04em" }}>
+                {benefitAccounts[0].name.split(/\s+/).map(w=>w[0]).join("").toUpperCase().slice(0,4)}
+              </span>
+              {fmtEur(benefitHeaderBalance)}
+            </button>
+          </div>
+        )}
+      </PageHeader>
       <div style={{ padding:"16px", display:"flex", flexDirection:"column", gap:14 }}>
 
         {/* Month tabs */}
@@ -1821,6 +2268,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
       {editingTx && <FormModal store={store} transaction={editingTx} onClose={()=>setEditingTx(null)} />}
       {deletingTx && <DeleteModal tx={deletingTx} onCancel={()=>setDeletingTx(null)} onConfirm={()=>{store.remove(deletingTx.id);setDeletingTx(null);}} />}
       {cardFormAccount && <FormModal store={store} account={cardFormAccount} isCardTransaction onClose={()=>setCardFormAccount(null)} />}
+      {benefitAccount && <BenefitModal store={store} account={benefitAccount} onClose={()=>setBenefitAccount(null)} />}
 
       {/* Unpointed transactions warning modal */}
       {showUnpointedWarning && (
@@ -1883,6 +2331,9 @@ function Transactions({ store, onAdd }) {
   const [clickedTxId,   setClickedTxId] = useState(null);
 
   const filtered = useMemo(()=>store.transactions.filter(t=>{
+    // Exclude transactions belonging to benefit accounts
+    const acct = store.accounts.find(a => a.id === t.accountId);
+    if (acct?.type === "benefit") return false;
     const q=search.toLowerCase().trim();
     if (q) {
       const matchTitle  = t.title.toLowerCase().includes(q);
@@ -1910,7 +2361,6 @@ function Transactions({ store, onAdd }) {
     return Object.entries(map).sort((a,b)=>b[0].localeCompare(a[0]));
   },[filtered]);
 
-  // Show card filter button only if any account has a card
   const hasAnyCard = store.accounts.some(a => a.cardName);
   const checkingAccounts = store.accounts.filter(a => a.type === "checking");
 
@@ -2008,18 +2458,31 @@ function Settings({ store, user }) {
       }
       return false;
     }).length;
+    // Count past benefit expenses and allotments
+    const benefitToDelete = Object.values(store.benefitData).reduce((sum, acct) => {
+      const exp = (acct.expenses  || []).filter(e => mKey(e.date) < currentKey).length;
+      const all = Object.keys(acct.allotments || {}).filter(mk => mk < currentKey).length;
+      return sum + exp + all;
+    }, 0);
+    const totalToDelete = toDelete + benefitToDelete;
     const currentName = new Date().toLocaleDateString("fr-FR", { month:"long", year:"numeric" });
     let msg;
-    if (toDelete === 0 && toKeep === 0) {
+    if (totalToDelete === 0 && toKeep === 0) {
       msg = `Aucune transaction antérieure à ${currentName}.`;
-    } else if (toDelete === 0 && toKeep > 0) {
+    } else if (toDelete === 0 && toKeep > 0 && benefitToDelete === 0) {
       msg = `Les ${toKeep} transaction(s) du mois précédent sont des dépenses carte à débit différé — elles seront conservées jusqu'à ce que leur prélèvement soit passé.`;
     } else if (toKeep > 0) {
-      msg = `Supprimer ${toDelete} transaction(s) antérieure(s) à ${currentName} ? Les ${toKeep} transaction(s) carte à débit différé seront conservées jusqu'à leur prélèvement.`;
+      const parts = [];
+      if (toDelete > 0)       parts.push(`${toDelete} transaction(s)`);
+      if (benefitToDelete > 0) parts.push(`${benefitToDelete} entrée(s) Avantages`);
+      msg = `Supprimer ${parts.join(" et ")} antérieure(s) à ${currentName} ? Les ${toKeep} transaction(s) carte à débit différé seront conservées jusqu'à leur prélèvement.`;
     } else {
-      msg = `Supprimer ${toDelete} transaction(s) antérieure(s) à ${currentName} ?`;
+      const parts = [];
+      if (toDelete > 0)       parts.push(`${toDelete} transaction(s)`);
+      if (benefitToDelete > 0) parts.push(`${benefitToDelete} entrée(s) Avantages`);
+      msg = `Supprimer ${parts.join(" et ")} antérieure(s) à ${currentName} ?`;
     }
-    setCleanupMessage({ text: msg, canDelete: toDelete > 0 });
+    setCleanupMessage({ text: msg, canDelete: totalToDelete > 0 });
     setShowCleanupConfirm(true);
   };
 
@@ -2050,6 +2513,7 @@ function Settings({ store, user }) {
         savingsSnapDays: DEFAULT_SAVINGS_SNAP_DAYS,
         savingsSnapActive: DEFAULT_SAVINGS_SNAP_ACTIVE,
         cardDebitDates: DEMO_CARD_DEBIT_DATES,
+        benefitData: DEMO_BENEFIT_DATA,
       });
       // Reload page to reinitialize store state cleanly
       window.location.reload();
@@ -2119,6 +2583,13 @@ function Settings({ store, user }) {
                 <p style={{ fontSize:10, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", marginTop:4 }}>💰 Comptes épargne</p>
               )}
               {store.accounts.filter(a=>a.type==="savings").map((acc)=>(
+                <AccountRow key={acc.id} acc={acc} store={store} editingAccounts={editingAccounts} />
+              ))}
+              {/* Avantages */}
+              {store.accounts.filter(a=>a.type==="benefit").length > 0 && editingAccounts && (
+                <p style={{ fontSize:10, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", marginTop:4 }}>🎫 Avantages</p>
+              )}
+              {store.accounts.filter(a=>a.type==="benefit").map((acc)=>(
                 <AccountRow key={acc.id} acc={acc} store={store} editingAccounts={editingAccounts} />
               ))}
             </div>
@@ -2386,13 +2857,15 @@ function AccountRow({ acc, store, editingAccounts }) {
     <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:"12px 14px" }}>
       {!editingAccounts ? (
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <span style={{ fontSize:20 }}>{acc.type==="savings"?"💰":"💳"}</span>
+          <span style={{ fontSize:20 }}>{acc.type==="savings"?"💰":acc.type==="benefit"?"🎫":"💳"}</span>
           <div style={{ flex:1 }}>
             <p style={{ fontSize:14, fontWeight:500 }}>{acc.name}</p>
             <p style={{ fontSize:11, color:"var(--text-muted)" }}>
               {acc.type==="savings"
                 ? (acc.savingsSubtype==="blocked" ? "🔒 Bloquée — " : "✓ Disponible — ") + fmtEur(acc.balance)
-                : "Compte courant"}
+                : acc.type==="benefit"
+                  ? "Avantage salarial"
+                  : "Compte courant"}
             </p>
           </div>
         </div>
@@ -2414,13 +2887,29 @@ function AccountRow({ acc, store, editingAccounts }) {
             <button onClick={handleDeleteClick} disabled={!canDelete}
               style={{ padding:"8px 12px", borderRadius:8, background:"var(--red-dim)", border:"1px solid var(--red)", color:"var(--red)", fontSize:13, fontWeight:600, opacity:canDelete?1:0.4, alignSelf:"stretch" }}>✕</button>
           </div>
-          {/* Type courant / épargne */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
-            {[["checking","💳 Courant"],["savings","💰 Épargne"]].map(([type,label])=>(
-              <button key={type} onClick={()=>store.updateAccount(acc.id,{type})}
-                style={{ padding:"8px", borderRadius:8, border:"1px solid", borderColor:acc.type===type?"var(--gold)":"var(--border)", background:acc.type===type?"var(--gold-dim)":"var(--bg)", color:acc.type===type?"var(--gold)":"var(--text-muted)", fontSize:12, fontWeight:600 }}>{label}</button>
-            ))}
-          </div>
+          {/* Type courant / épargne / avantage */}
+          {(() => {
+            const existingBenefit = store.accounts.find(a => a.type === "benefit" && a.id !== acc.id);
+            return (
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                {[["checking","💳 Courant"],["savings","💰 Épargne"],["benefit","🎫 Avantage"]].map(([type,label])=>{
+                  const isCurrent  = acc.type === type;
+                  const isDisabled = type === "benefit" && !!existingBenefit && !isCurrent;
+                  return (
+                    <button key={type}
+                      onClick={()=>{ if (!isDisabled) store.updateAccount(acc.id,{type}); }}
+                      title={isDisabled ? "Un seul compte Avantage est autorisé" : undefined}
+                      style={{ padding:"8px", borderRadius:8, border:"1px solid",
+                        borderColor:isCurrent?"var(--gold)":"var(--border)",
+                        background:isCurrent?"var(--gold-dim)":"var(--bg)",
+                        color:isCurrent?"var(--gold)":isDisabled?"var(--text-sub)":"var(--text-muted)",
+                        fontSize:12, fontWeight:600,
+                        opacity:isDisabled?0.4:1, cursor:isDisabled?"not-allowed":"pointer" }}>{label}</button>
+                  );
+                })}
+              </div>
+            );
+          })()}
           {/* Sous-type épargne (disponible / bloquée) */}
           {acc.type==="savings" && (
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
@@ -2449,6 +2938,16 @@ function AccountRow({ acc, store, editingAccounts }) {
                 )}
               </div>
               {acc.cardName && <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:4 }}>Les dépenses carte apparaîtront dans un panneau dédié sur le tableau de bord.</p>}
+            </div>
+          )}
+          {/* Valeur unitaire par défaut (avantages uniquement) */}
+          {acc.type==="benefit" && (
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Valeur unitaire d'un titre (€)</label>
+              <input type="number" step="0.01" min="0" value={acc.defaultUnitValue||""} onChange={e=>store.updateAccount(acc.id,{defaultUnitValue:parseFloat(e.target.value)||0})} placeholder="ex : 9.25"
+                inputMode="decimal"
+                style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+              <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:4 }}>Pré-remplie lors de la saisie d'une dotation.</p>
             </div>
           )}
           {/* Solde (épargne uniquement) */}
