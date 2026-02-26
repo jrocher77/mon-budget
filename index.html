@@ -795,6 +795,119 @@ function useStore(uid, email) {
     addSavingsSnapshot({ date: dateKey, available, blocked, auto: true, note: "" });
   }, [ready]);
 
+  // ── Benefit reconciliation batch ─────────────────────────────────────────
+  // Runs once after Firestore data is fully loaded.
+  // Processes TR expenses without _checked flag (injected by Firebase Function or
+  // imported externally) and splits them against dailyCap + available balance,
+  // creating overflow card transactions where needed.
+  // Expenses are processed oldest-first so multi-day gaps are handled correctly.
+  useEffect(() => {
+    if (!ready || !loadedRef.current || !trustedRef.current) return;
+
+    const benefitAccounts = accounts.filter(a =>
+      a.type === "benefit" && a.dailyCap > 0 && a.overflowAccountId
+    );
+    if (benefitAccounts.length === 0) return;
+
+    let bdChanged      = false;
+    let newCardTxs     = [];
+    const nextBd       = { ...benefitData };
+
+    benefitAccounts.forEach(acc => {
+      const acct         = nextBd[acc.id] || { allotments: {}, expenses: [] };
+      const unchecked    = acct.expenses.filter(e => !e._checked);
+      if (unchecked.length === 0) return;
+
+      const overflowAcct = accounts.find(a => a.id === acc.overflowAccountId);
+      if (!overflowAcct) return;
+
+      // Sort unchecked oldest-first
+      const sorted = [...unchecked].sort((a, b) => a.date.localeCompare(b.date));
+
+      // Build a mutable map of checked expenses to track running state
+      // (checked expenses are already correct — don't touch them)
+      let checkedExpenses = acct.expenses.filter(e => e._checked).map(e => ({ ...e }));
+
+      // Helper: compute running solde up to (not including) a given expense
+      // using only already-checked expenses and the allotments
+      const runSolde = (upToDate, upToId) => {
+        // Carry-over from all months strictly before the expense's month
+        const mk = mKey(upToDate);
+        const allMonths = new Set([
+          ...Object.keys(acct.allotments || {}),
+          ...checkedExpenses.map(e => mKey(e.date)),
+        ]);
+        const pastMonths = [...allMonths].filter(m => m < mk).sort();
+        let carry = 0;
+        for (const m of pastMonths) {
+          const allotted = allotmentAmount(acct.allotments?.[m]);
+          const spent    = checkedExpenses.filter(e => mKey(e.date) === m).reduce((s, e) => s + e.amount, 0);
+          carry = Math.max(0, carry + allotted - spent);
+        }
+        // Add allotment of current month
+        const allottedCur = allotmentAmount(acct.allotments?.[mk]);
+        // Subtract checked expenses of current month up to (not including) this expense
+        const spentCur = checkedExpenses
+          .filter(e => mKey(e.date) === mk && e.date <= upToDate && e.id !== upToId)
+          .reduce((s, e) => s + e.amount, 0);
+        return carry + allottedCur - spentCur;
+      };
+
+      // Helper: daily cap already consumed on a given date among checked expenses
+      const dailyConsumed = (date) =>
+        checkedExpenses.filter(e => e.date === date).reduce((s, e) => s + e.amount, 0);
+
+      const updatedExpenses = [...checkedExpenses]; // will hold all expenses after processing
+
+      sorted.forEach(exp => {
+        const solde      = Math.max(0, runSolde(exp.date, exp.id));
+        const capRestant = Math.max(0, Math.round((acc.dailyCap - dailyConsumed(exp.date)) * 100) / 100);
+        const partTR     = Math.round(Math.min(exp.amount, capRestant, solde) * 100) / 100;
+        const partCarte  = Math.round((exp.amount - partTR) * 100) / 100;
+
+        // Update the TR expense: clamp to partTR and mark checked
+        const checkedExp = { ...exp, amount: partTR > 0 ? partTR : exp.amount, _checked: true };
+        // If partTR is 0 (solde épuisé + plafond épuisé), keep original amount as 0
+        // Actually: if partTR===0 we still keep the expense but at 0 so it's visible
+        // Better: remove if 0, full amount goes to card
+        if (partTR > 0) {
+          checkedExpenses = [...checkedExpenses, { ...exp, amount: partTR, _checked: true }];
+          updatedExpenses.push({ ...exp, amount: partTR, _checked: true });
+        }
+        // else: TR expense fully overflows — don't keep it in benefitData
+
+        // Create card transaction for the overflow
+        if (partCarte > 0) {
+          newCardTxs.push({
+            title:     exp.title,
+            amount:    partCarte,
+            type:      "expense",
+            date:      exp.date,
+            accountId: acc.overflowAccountId,
+            isCard:    !!overflowAcct.cardName,
+            pointed:   false,
+          });
+        }
+
+        bdChanged = true;
+      });
+
+      // Replace expenses: checked ones + updated unchecked ones (without the originals)
+      nextBd[acc.id] = {
+        ...acct,
+        expenses: updatedExpenses,
+      };
+    });
+
+    if (!bdChanged) return;
+
+    dbg(`🔄 Batch TR — rectification de ${newCardTxs.length} transaction(s) carte`);
+    setBenefitData(nextBd);
+    if (newCardTxs.length > 0) {
+      setTx(prev => [...newCardTxs.map(t => ({ ...t, id: genId() })), ...prev]);
+    }
+  }, [ready]); // runs once after initial load
+
   return { ready, transactions, add, remove, update, togglePointed,
     templates, addTplItem, removeTplItem, updateTplItem, applyTemplate,
     accounts, addAccount, removeAccount, updateAccount, moveAccount,
@@ -1573,12 +1686,53 @@ function BenefitModal({ store, account, onClose }) {
   const saveExpense = () => {
     const v = parseFloat(expAmount.replace(",","."));
     if (!expTitle.trim() || isNaN(v) || v <= 0 || !expDate) return;
+
     if (editingExp) {
+      // Edition : mise à jour simple, pas de recalcul du split
       store.updateBenefitExpense(account.id, editingExp, { title: expTitle.trim(), amount: Math.round(v*100)/100, date: expDate });
       setEditingExp(null);
     } else {
-      store.addBenefitExpense(account.id, { title: expTitle.trim(), amount: Math.round(v*100)/100, date: expDate });
+      // Nouvelle dépense : calcul du split TR / carte
+      const dailyCap         = account.dailyCap || 0;
+      const overflowAcctId   = account.overflowAccountId || "";
+      const overflowAcct     = overflowAcctId ? store.accounts.find(a => a.id === overflowAcctId) : null;
+      const hasSplit         = dailyCap > 0 && overflowAcct;
+
+      // Solde disponible à ce moment (report + dotation − dépenses du mois sauf ce jour)
+      const solde = available; // already computed in component scope
+
+      // Calcul de la part TR
+      let partTR = Math.round(v * 100) / 100;
+      let partCarte = 0;
+
+      if (hasSplit) {
+        // Dépenses TR déjà saisies ce jour → plafond restant
+        const alreadyToday = (benefitAcct.expenses || [])
+          .filter(e => e.date === expDate)
+          .reduce((s, e) => s + e.amount, 0);
+        const capRestant = Math.max(0, Math.round((dailyCap - alreadyToday) * 100) / 100);
+
+        // La part TR est limitée par le plafond restant ET le solde disponible
+        partTR    = Math.round(Math.min(v, capRestant, Math.max(0, solde)) * 100) / 100;
+        partCarte = Math.round((v - partTR) * 100) / 100;
+      } else {
+        // Pas de split configuré : on plafonne quand même au solde si positif
+        partTR    = Math.round(Math.min(v, Math.max(0, solde > 0 ? v : 0)) * 100) / 100;
+        // Si le solde est insuffisant sans compte de report, on laisse passer quand même (solde négatif)
+        partTR    = Math.round(v * 100) / 100;
+        partCarte = 0;
+      }
+
+      // Enregistrement TR
+      if (partTR > 0) {
+        store.addBenefitExpense(account.id, { title: expTitle.trim(), amount: partTR, date: expDate, _checked: true });
+      }
+      // Enregistrement carte (transaction isCard sur le compte de report)
+      if (partCarte > 0 && overflowAcct) {
+        store.add({ title: expTitle.trim(), amount: partCarte, type: "expense", date: expDate, accountId: overflowAcctId, isCard: !!overflowAcct.cardName, pointed: false });
+      }
     }
+
     setExpTitle(""); setExpAmount(""); setExpDate(new Date().toISOString().split("T")[0]);
     setAddingExp(false);
   };
@@ -1735,6 +1889,31 @@ function BenefitModal({ store, account, onClose }) {
                   <input type="date" value={expDate} onChange={e=>setExpDate(e.target.value)}
                     style={{ fontSize:13, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)", colorScheme:"var(--colorscheme)" }} />
                 </div>
+                {/* Split preview — affiché uniquement en création, si plafond + compte de report configurés */}
+                {!editingExp && (() => {
+                  const v = parseFloat(expAmount.replace(",","."));
+                  const dailyCap = account.dailyCap || 0;
+                  const overflowAcct = account.overflowAccountId ? store.accounts.find(a => a.id === account.overflowAccountId) : null;
+                  if (!dailyCap || !overflowAcct || isNaN(v) || v <= 0) return null;
+                  const alreadyToday = (benefitAcct.expenses || []).filter(e => e.date === expDate).reduce((s,e) => s + e.amount, 0);
+                  const capRestant = Math.max(0, Math.round((dailyCap - alreadyToday) * 100) / 100);
+                  const partTR    = Math.round(Math.min(v, capRestant, Math.max(0, available)) * 100) / 100;
+                  const partCarte = Math.round((v - partTR) * 100) / 100;
+                  if (partCarte <= 0) return null;
+                  return (
+                    <div style={{ display:"flex", flexDirection:"column", gap:4, padding:"8px 10px", background:"rgba(201,168,76,0.07)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8 }}>
+                      <p style={{ fontSize:11, fontWeight:700, color:"var(--gold)", letterSpacing:"0.04em", textTransform:"uppercase" }}>Répartition automatique</p>
+                      <div style={{ display:"flex", justifyContent:"space-between" }}>
+                        <span style={{ fontSize:12, color:"var(--text-muted)" }}>🎫 Ticket Restaurant</span>
+                        <span style={{ fontSize:12, fontWeight:700, color:"var(--green)" }}>{fmtEur(partTR)}</span>
+                      </div>
+                      <div style={{ display:"flex", justifyContent:"space-between" }}>
+                        <span style={{ fontSize:12, color:"var(--text-muted)" }}>🃏 {overflowAcct.name}</span>
+                        <span style={{ fontSize:12, fontWeight:700, color:"var(--red)" }}>{fmtEur(partCarte)}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div style={{ display:"flex", gap:8 }}>
                   <button onClick={saveExpense} style={{ flex:2, padding:"9px", borderRadius:8, background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:13, fontWeight:700 }}>✓ {editingExp ? "Modifier" : "Ajouter"}</button>
                   <button onClick={()=>{setAddingExp(false);setEditingExp(null);setExpTitle("");setExpAmount("");setExpDate(new Date().toISOString().split("T")[0]);}} style={{ flex:1, padding:"9px", borderRadius:8, background:"var(--surface3)", border:"1px solid var(--border)", color:"var(--text-muted)", fontSize:13 }}>Annuler</button>
@@ -2063,7 +2242,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
           return s + txs.reduce((ss,t)=>ss+(t.type==="expense"?t.amount:-t.amount),0);
         }, 0);
         checking.push({account:acc, balance: inc-exp - cardExp - acctSynth });
-      } else {
+      } else if (acc.type === "savings") {
         savings.push({account:acc,balance:acc.balance||0});
       }
     });
@@ -2948,6 +3127,30 @@ function AccountRow({ acc, store, editingAccounts }) {
                 inputMode="decimal"
                 style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
               <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:4 }}>Pré-remplie lors de la saisie d'une dotation.</p>
+            </div>
+          )}
+          {/* Plafond journalier + compte de report (avantages uniquement) */}
+          {acc.type==="benefit" && (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              <div>
+                <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Plafond journalier (€) <span style={{ fontWeight:400, textTransform:"none" }}>— optionnel</span></label>
+                <input type="number" step="0.01" min="0" value={acc.dailyCap||""} onChange={e=>store.updateAccount(acc.id,{dailyCap:parseFloat(e.target.value)||0})} placeholder="ex : 25.00"
+                  inputMode="decimal"
+                  style={{ width:"100%", fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+              </div>
+              {acc.dailyCap > 0 && (
+                <div>
+                  <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Compte de report de la différence</label>
+                  <select value={acc.overflowAccountId||""} onChange={e=>store.updateAccount(acc.id,{overflowAccountId:e.target.value})}
+                    style={{ width:"100%", fontSize:13, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }}>
+                    <option value="" style={{ background:"var(--select-bg)" }}>— Aucun —</option>
+                    {store.accounts.filter(a=>a.type==="checking").map(a=>(
+                      <option key={a.id} value={a.id} style={{ background:"var(--select-bg)" }}>💳 {a.name}{a.cardName ? ` · ${a.cardName}` : ""}</option>
+                    ))}
+                  </select>
+                  {acc.overflowAccountId && <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:4 }}>La différence au-delà du plafond ou du solde sera créée comme dépense carte sur ce compte.</p>}
+                </div>
+              )}
             </div>
           )}
           {/* Solde (épargne uniquement) */}
