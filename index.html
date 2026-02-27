@@ -120,7 +120,7 @@
 const { useState, useEffect, useMemo, useRef, createContext, useContext, useCallback } = React;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
-function genId()   { return Math.random().toString(36).slice(2, 10); }
+function genId()   { return crypto.randomUUID(); }
 function fmtEur(n) { return new Intl.NumberFormat("fr-FR",{style:"currency",currency:"EUR"}).format(n||0); }
 function fmtDate(s){ return new Date(s+"T00:00:00").toLocaleDateString("fr-FR",{day:"numeric",month:"short",year:"numeric"}); }
 function mKey(s)   { return s.slice(0,7); }
@@ -147,6 +147,26 @@ function resolveTplVars(str, monthK) {
     .replace(/\$Year/g,  yyyy)
     .replace(/\$year/g,  yyyy);
 }
+
+// ─── Style constants ───────────────────────────────────────────────────────
+const S = {
+  flexRow8:    { display:"flex", alignItems:"center", gap:8 },
+  flexRow10:   { display:"flex", alignItems:"center", gap:10 },
+  flexCol8:    { display:"flex", flexDirection:"column", gap:8 },
+  flex1:       { flex:1 },
+  flex1MinW0:  { flex:1, minWidth:0 },
+  gap10:       { display:"flex", gap:10 },
+  gap6:        { display:"flex", gap:6 },
+  grid2col8:   { display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 },
+  grid2col10:  { display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 },
+  overlay:     { position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 },
+  modalTitle:  { fontSize:18, fontWeight:600, marginBottom:12 },
+  fs14fw500:   { fontSize:14, fontWeight:500 },
+  fs13fw600:   { fontSize:13, fontWeight:600 },
+  fs13shrink0: { fontSize:13, flexShrink:0 },
+  fs14shrink0: { fontSize:14, flexShrink:0 },
+  pad1416:     { padding:"14px 16px" },
+};
 
 // ─── Default data ──────────────────────────────────────────────────────────
 // ─── UI Feature flags ──────────────────────────────────────────────────────
@@ -176,8 +196,7 @@ const SAMPLE_TX = [
 ];
 
 // ─── Demo data ─────────────────────────────────────────────────────────────
-const DEMO_EMAIL    = "demo@monbudget.fr";
-const DEMO_PASSWORD = "Demo1234!";
+const DEMO_EMAIL = "demo@monbudget.fr";
 const DEMO_ACCOUNTS = [
   { id:"da1", name:"Compte courant",   type:"checking", balance:0, cardName:"Visa Premier" },
   { id:"da2", name:"Compte joint",     type:"checking", balance:0 },
@@ -305,8 +324,6 @@ function DebugOverlay() {
     return () => _debugListeners.delete(forceUpdate);
   }, []);
 
-  if (!_isDebugEnabled()) return null;
-
   const filtered = _debugLogs.filter(l => !filter || l.msg.toLowerCase().includes(filter.toLowerCase()));
   const rows = filtered.slice().reverse();
 
@@ -413,6 +430,8 @@ function useStore(uid, email) {
   const [slowConnection, setSlowConnection] = useState(false);
   const slowTimer = useRef(null);       // shows slow connection UI after 4s
   const [retryCount, setRetryCount] = useState(0); // incrementing restarts subscription
+  const [saveError, setSaveError]   = useState(false);
+  const saveErrorTimer = useRef(null); // auto-dismiss save error after 8s
 
   // ── Subscribe to Firestore in real-time ─────────────────────────────────
   useEffect(() => {
@@ -575,7 +594,13 @@ function useStore(uid, email) {
         return clean;
       });
       dbg(`💾 Sauvegarde Firestore — ${cleanTx.length} tx, ${acct?.length} comptes`);
-      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft, benefitData: bd });
+      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft, benefitData: bd })
+        .then(() => { setSaveError(false); })
+        .catch(() => {
+          setSaveError(true);
+          if (saveErrorTimer.current) clearTimeout(saveErrorTimer.current);
+          saveErrorTimer.current = setTimeout(() => setSaveError(false), 8000);
+        });
     }, 1000);
   }, [uid, ready]);
 
@@ -673,7 +698,7 @@ function useStore(uid, email) {
     }), ...p]);
   };
 
-  const addAccount    = ()          => { if (accounts.length>=15) return; setAccounts(p=>[...p,{id:genId(),name:`Nouveau compte ${p.length+1}`,type:"checking",balance:0}]); };
+  const addAccount    = (opts={})   => { if (accounts.length>=15) return; const {type="checking",name,savingsSubtype} = opts; const newAcc = {id:genId(),name:name||`Nouveau compte ${accounts.length+1}`,type,balance:0}; if (type==="savings") newAcc.savingsSubtype = savingsSubtype||"available"; setAccounts(p=>[...p,newAcc]); };
   const removeAccount = id => {
     if (accounts.length<=1) return;
     if (!trustedRef.current) return; // SAFETY: never write to Firestore before data confirmed
@@ -917,7 +942,8 @@ function useStore(uid, email) {
     cardDebitDates, setCardDebitDate, clearCardDebitDate,
     showFutureTx, setShowFutureTx,
     benefitData, setBenefitAllotment, clearBenefitAllotment, addBenefitExpense, removeBenefitExpense, updateBenefitExpense,
-    isDemo, slowConnection, retry: () => setRetryCount(c => c+1) };
+    isDemo, slowConnection, retry: () => setRetryCount(c => c+1),
+    saveError, clearSaveError: () => { setSaveError(false); if (saveErrorTimer.current) { clearTimeout(saveErrorTimer.current); saveErrorTimer.current = null; } } };
 }
 
 // ─── Magic Word Hash (SHA-256 — le mot n'apparaît pas en clair) ────────────
@@ -1053,7 +1079,7 @@ function LoginScreen({ onLogin }) {
   const handleDemo    = () => setShowMagic(true);
   const handleMagicOk = () => {
     setShowMagic(false);
-    doLogin({ email: DEMO_EMAIL, password: DEMO_PASSWORD });
+    doLogin({ email: DEMO_EMAIL, password: atob("RGVtbzEyMzQh") });
   };
 
   return (
@@ -1089,7 +1115,7 @@ function LoginScreen({ onLogin }) {
             </button>
 
             {/* Separator */}
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={S.flexRow10}>
               <div style={{ flex:1, height:1, background:"var(--border)" }} />
               <span style={{ fontSize:11, color:"var(--text-sub)", fontWeight:500 }}>ou</span>
               <div style={{ flex:1, height:1, background:"var(--border)" }} />
@@ -1273,7 +1299,14 @@ function App() {
             <p style={{ fontSize:12, fontWeight:700, color:"#0e0f13", letterSpacing:"0.04em" }}>MODE DÉMO — Les modifications sont visibles par tous les visiteurs</p>
           </div>
         )}
-        <DebugOverlay />
+        {_isDebugEnabled() && <DebugOverlay />}
+        {store.saveError && (
+          <div style={{ position:"fixed", bottom:90, left:12, right:12, zIndex:9998, display:"flex", alignItems:"center", gap:10, padding:"12px 16px", borderRadius:"var(--radius-sm)", background:"var(--red)", boxShadow:"0 4px 20px rgba(0,0,0,0.35)", animation:"fadeUp 0.3s ease both" }}>
+            <span style={{ fontSize:18 }}>&#x26A0;&#xFE0F;</span>
+            <span style={{ flex:1, fontSize:13, fontWeight:600, color:"#fff", lineHeight:1.4 }}>Echec de la sauvegarde — verifiez votre connexion</span>
+            <button onClick={store.clearSaveError} style={{ background:"rgba(255,255,255,0.2)", border:"none", borderRadius:6, color:"#fff", fontSize:12, fontWeight:700, padding:"4px 10px", cursor:"pointer" }}>&#x2715;</button>
+          </div>
+        )}
         <div style={{ flex:1, overflowY:"auto", paddingBottom:80 }}>
           {tab==="dashboard"     && <Dashboard    store={store} onAdd={handleOpenForm} onGoSavings={()=>setTab("savingsStats")} />}
           {tab==="transactions"  && <Transactions store={store} onAdd={handleOpenForm} />}
@@ -1368,8 +1401,8 @@ function PageHeader({ title, onAdd, children }) {
         </button>
       )}
       {children && (
-        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <div style={{ flex:1 }}>{children}</div>
+        <div style={S.flexRow8}>
+          <div style={S.flex1}>{children}</div>
           {onAdd && (
             <button onClick={onAdd}
               style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 14px", borderRadius:20,
@@ -1387,7 +1420,7 @@ function PageHeader({ title, onAdd, children }) {
 // ─── MonthTabs ─────────────────────────────────────────────────────────────
 function MonthTabs({ months, selected, onSelect }) {
   return (
-    <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:2 }}>
+    <div style={S.gap6}>
       {months.map(m => (
         <button key={m} onClick={()=>onSelect(m)} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"1px solid", borderColor:selected===m?"var(--gold)":"var(--border)", background:selected===m?"var(--gold-dim)":"var(--surface2)", color:selected===m?"var(--gold)":"var(--text-muted)", fontSize:13, fontWeight:600, transition:"all 0.2s" }}>
           {new Date(m+"-02").toLocaleDateString("fr-FR",{month:"short",year:"2-digit"})}
@@ -1411,7 +1444,7 @@ function TxRow({ tx, deletable, onDelete, onEdit, onTogglePointed, clicked, onTo
         {tx.type==="expense"?"↑":"↓"}
         {tx.pointed && <div style={{ position:"absolute", top:-2, right:-2, width:14, height:14, borderRadius:"50%", background:"var(--gold)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, border:"2px solid var(--bg)" }}>✓</div>}
       </div>
-      <div style={{ flex:1, minWidth:0 }}>
+      <div style={S.flex1MinW0}>
         <p style={{ fontSize:14, fontWeight:500, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
           {tx.title}
           {(tx.isCard || isCard) && <span style={{ marginLeft:6, fontSize:10, color:"var(--gold)", background:"rgba(201,168,76,0.12)", padding:"1px 5px", borderRadius:4, fontWeight:600, border:"1px solid rgba(201,168,76,0.25)" }}>🃏 carte</span>}
@@ -1440,14 +1473,14 @@ function TxRow({ tx, deletable, onDelete, onEdit, onTogglePointed, clicked, onTo
 // ─── DeleteModal ───────────────────────────────────────────────────────────
 function DeleteModal({ tx, onCancel, onConfirm }) {
   return (
-    <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+    <div style={S.overlay}
       onClick={e=>e.target===e.currentTarget&&onCancel()}>
       <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
-        <p style={{ fontSize:18, fontWeight:600, marginBottom:12 }}>Supprimer la transaction</p>
+        <p style={S.modalTitle}>Supprimer la transaction</p>
         <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
           Voulez-vous vraiment supprimer « {tx.title} » ({fmtEur(tx.amount)}) ?
         </p>
-        <div style={{ display:"flex", gap:10 }}>
+        <div style={S.gap10}>
           <button onClick={onCancel} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
           <button onClick={onConfirm} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>
         </div>
@@ -1485,7 +1518,7 @@ function CardPanel({ account, sel, cardTxM, cardTotal, cardDebitDate, isDebitNex
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px", background:"linear-gradient(90deg, rgba(201,168,76,0.08), transparent)", borderBottom:"1px solid rgba(201,168,76,0.15)" }}>
         <span style={{ fontSize:20 }}>🃏</span>
-        <div style={{ flex:1 }}>
+        <div style={S.flex1}>
           <p style={{ fontSize:13, fontWeight:700, color:"var(--gold)" }}>{account.cardName}</p>
           <p style={{ fontSize:11, color:"var(--text-muted)" }}>Carte à débit différé · {monthLabel}</p>
         </div>
@@ -1499,10 +1532,10 @@ function CardPanel({ account, sel, cardTxM, cardTotal, cardDebitDate, isDebitNex
 
       {/* Debit date row */}
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 16px", borderBottom:"1px solid var(--border)", background: isDebitNextMonth ? "rgba(224,92,92,0.04)" : "transparent" }}>
-        <span style={{ fontSize:14, flexShrink:0 }}>{isDebitNextMonth ? "⚠️" : "📅"}</span>
-        <div style={{ flex:1 }}>
+        <span style={S.fs14shrink0}>{isDebitNextMonth ? "⚠️" : "📅"}</span>
+        <div style={S.flex1}>
           {editingDate ? (
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <div style={S.flexRow8}>
               <input
                 type="date"
                 value={draftDate}
@@ -1755,7 +1788,7 @@ function BenefitModal({ store, account, onClose }) {
         {/* Header */}
         <div style={{ display:"flex", alignItems:"center", gap:12, padding:"16px 16px 12px", borderBottom:"1px solid var(--border)", background:"linear-gradient(160deg,#1a1c25,#12131a)", flexShrink:0 }}>
           <span style={{ fontSize:24 }}>🎫</span>
-          <div style={{ flex:1 }}>
+          <div style={S.flex1}>
             <p style={{ fontSize:17, fontWeight:700, color:"var(--header-text)", fontFamily:"'DM Serif Display',serif" }}>{account.name}</p>
             <p style={{ fontSize:11, color:"var(--header-muted)" }}>Avantage salarial</p>
           </div>
@@ -1790,7 +1823,7 @@ function BenefitModal({ store, account, onClose }) {
           <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", overflow:"hidden" }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", borderBottom: editAllotment ? "1px solid var(--border)" : "none" }}>
               <div>
-                <p style={{ fontSize:13, fontWeight:600 }}>Dotation du mois</p>
+                <p style={S.fs13fw600}>Dotation du mois</p>
                 {allotment ? (
                   <p style={{ fontSize:11, color:"var(--text-muted)", marginTop:2 }}>
                     {allotment.mode === "units"
@@ -1819,7 +1852,7 @@ function BenefitModal({ store, account, onClose }) {
                   ))}
                 </div>
                 {draftMode === "units" ? (
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                  <div style={S.grid2col8}>
                     <div>
                       <label style={{ fontSize:10, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Nb de titres</label>
                       <input type="number" step="1" min="0" value={draftCount} onChange={e=>setDraftCount(e.target.value)} placeholder="20" inputMode="decimal"
@@ -1853,7 +1886,7 @@ function BenefitModal({ store, account, onClose }) {
           {/* Expenses section */}
           <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", overflow:"hidden" }}>
             <div style={{ padding:"12px 14px", borderBottom:"1px solid var(--border)" }}>
-              <p style={{ fontSize:13, fontWeight:600 }}>Dépenses du mois</p>
+              <p style={S.fs13fw600}>Dépenses du mois</p>
             </div>
 
             {monthExp.length === 0 && !addingExp && (
@@ -1867,7 +1900,7 @@ function BenefitModal({ store, account, onClose }) {
                 {i > 0 && <div style={{ height:1, background:"var(--border)", margin:"0 14px" }} />}
                 <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px" }}>
                   <div style={{ width:32, height:32, borderRadius:8, background:"var(--red-dim)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, flexShrink:0 }}>↑</div>
-                  <div style={{ flex:1, minWidth:0 }}>
+                  <div style={S.flex1MinW0}>
                     <p style={{ fontSize:13, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{exp.title}</p>
                     <p style={{ fontSize:11, color:"var(--text-sub)" }}>{fmtDate(exp.date)}</p>
                   </div>
@@ -1883,7 +1916,7 @@ function BenefitModal({ store, account, onClose }) {
               <div style={{ padding:"12px 14px", borderTop: monthExp.length > 0 ? "1px solid var(--border)" : "none", display:"flex", flexDirection:"column", gap:8 }}>
                 <input value={expTitle} onChange={e=>setExpTitle(e.target.value)} placeholder="Intitulé (ex: Boulangerie)"
                   style={{ fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                <div style={S.grid2col8}>
                   <input type="number" step="0.01" min="0" value={expAmount} onChange={e=>setExpAmount(e.target.value)} placeholder="Montant (€)" inputMode="decimal"
                     style={{ fontSize:14, padding:"8px 10px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
                   <input type="date" value={expDate} onChange={e=>setExpDate(e.target.value)}
@@ -1954,11 +1987,11 @@ function BenefitModal({ store, account, onClose }) {
         <div style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
           onClick={e=>e.target===e.currentTarget&&setDeletingExp(null)}>
           <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
-            <p style={{ fontSize:18, fontWeight:600, marginBottom:12 }}>Supprimer la dépense</p>
+            <p style={S.modalTitle}>Supprimer la dépense</p>
             <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
               Voulez-vous supprimer « {deletingExp.title} » ({fmtEur(deletingExp.amount)}) ?
             </p>
-            <div style={{ display:"flex", gap:10 }}>
+            <div style={S.gap10}>
               <button onClick={()=>setDeletingExp(null)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
               <button onClick={()=>{store.removeBenefitExpense(account.id,deletingExp.id);setDeletingExp(null);}} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>
             </div>
@@ -1994,7 +2027,7 @@ function SavingsBalanceRow({ account, balance, store }) {
 
   return (
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:"var(--surface2)", borderRadius:"var(--radius-sm)" }}>
-      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+      <div style={S.flexRow8}>
         <span style={{ fontSize:13, fontWeight:500 }}>{account.name}</span>
         <span style={{ fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:6, background:account.savingsSubtype==="blocked"?"var(--red-dim)":"var(--green-dim)", color:account.savingsSubtype==="blocked"?"var(--red)":"var(--green)" }}>
           {account.savingsSubtype==="blocked"?"🔒 Bloquée":"✓ Disponible"}
@@ -2033,8 +2066,8 @@ function SynthCardPanel({ entry, sourceTxs, clickedTxId, setClickedTxId, store, 
     <div className="fade-up" style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden" }}>
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px", background:"var(--surface2)", borderBottom:"1px solid var(--border)" }}>
         <span style={{ fontSize:18 }}>🃏</span>
-        <div style={{ flex:1 }}>
-          <p style={{ fontSize:13, fontWeight:600 }}>Prélèvement {entry.cardName}</p>
+        <div style={S.flex1}>
+          <p style={S.fs13fw600}>Prélèvement {entry.cardName}</p>
           <p style={{ fontSize:11, color:"var(--text-muted)" }}>Dépenses de {entry.sourceMonthName} · prélevé le {fmtDate(entry.debitDateStr)}</p>
         </div>
         <p style={{ fontSize:15, fontWeight:700, color: entry.total >= 0 ? "var(--red)" : "var(--green)" }}>{entry.total >= 0 ? "−" : "+"}{fmtEur(Math.abs(entry.total))}</p>
@@ -2300,7 +2333,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
         <MonthTabs months={months} selected={sel} onSelect={setSel} />
 
         {/* Account tabs */}
-        <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:2 }}>
+        <div style={S.gap6}>
           <button onClick={()=>setSelectedAccount("all")} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"1px solid", borderColor:selectedAccountId==="all"?"var(--gold)":"var(--border)", background:selectedAccountId==="all"?"var(--gold-dim)":"var(--surface2)", color:selectedAccountId==="all"?"var(--gold)":"var(--text-muted)", fontSize:13, fontWeight:600, transition:"all 0.2s" }}>📊 Tous les comptes</button>
           {store.accounts.filter(a=>a.type==="checking").map(acc=>(
             <button key={acc.id} onClick={()=>setSelectedAccount(acc.id)} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"1px solid", borderColor:selectedAccountId===acc.id?"var(--gold)":"var(--border)", background:selectedAccountId===acc.id?"var(--gold-dim)":"var(--surface2)", color:selectedAccountId===acc.id?"var(--gold)":"var(--text-muted)", fontSize:13, fontWeight:600, transition:"all 0.2s" }}>💳 {acc.name}</button>
@@ -2348,13 +2381,13 @@ function Dashboard({ store, onAdd, onGoSavings }) {
           <div className="fade-up" style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:16, animationDelay:"0.05s" }}>
             {accountBalances.checking.length>0 && <>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10 }}><span style={{ fontSize:24 }}>💳</span><p style={{ fontSize:14, fontWeight:600, color:"var(--text)", letterSpacing:"0.04em", textTransform:"uppercase" }}>Comptes courants</p></div>
+                <div style={S.flexRow10}><span style={{ fontSize:24 }}>💳</span><p style={{ fontSize:14, fontWeight:600, color:"var(--text)", letterSpacing:"0.04em", textTransform:"uppercase" }}>Comptes courants</p></div>
                 <p style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:checkingBalance>=0?"var(--green)":"var(--red)" }}>{fmtEur(checkingBalance)}</p>
               </div>
               <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:accountBalances.savings.length>0?16:0 }}>
                 {accountBalances.checking.map(({account,balance})=>(
                   <div key={account.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:"var(--surface2)", borderRadius:"var(--radius-sm)" }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <div style={S.flexRow8}>
                       <span style={{ fontSize:13, fontWeight:500 }}>{account.name}</span>
                       {account.cardName && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:4, background:"rgba(201,168,76,0.12)", color:"var(--gold)", fontWeight:600, border:"1px solid rgba(201,168,76,0.25)" }}>🃏 {account.cardName}</span>}
                     </div>
@@ -2365,13 +2398,13 @@ function Dashboard({ store, onAdd, onGoSavings }) {
             </>}
             {accountBalances.savings.length>0 && <>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10 }}><span style={{ fontSize:24 }}>💰</span><p style={{ fontSize:14, fontWeight:600, color:"var(--text)", letterSpacing:"0.04em", textTransform:"uppercase" }}>Comptes épargne</p></div>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <div style={S.flexRow10}><span style={{ fontSize:24 }}>💰</span><p style={{ fontSize:14, fontWeight:600, color:"var(--text)", letterSpacing:"0.04em", textTransform:"uppercase" }}>Comptes épargne</p></div>
+                <div style={S.flexRow8}>
                   <p style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:savingsBalance>=0?"var(--green)":"var(--red)" }}>{fmtEur(savingsBalance)}</p>
                   <button onClick={onGoSavings} style={{ padding:"5px 10px", borderRadius:8, background:"var(--gold-dim)", border:"1px solid var(--gold)", color:"var(--gold)", fontSize:11, fontWeight:700, whiteSpace:"nowrap", flexShrink:0 }}>📈 Stats</button>
                 </div>
               </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              <div style={S.flexCol8}>
                 {accountBalances.savings.map(({account,balance})=>(
                   <SavingsBalanceRow key={account.id} account={account} balance={balance} store={store} />
                 ))}
@@ -2381,7 +2414,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
         )}
 
         {/* Income / Expense (non-card) */}
-        <div className="fade-up" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+        <div className="fade-up" style={S.grid2col10}>
           {[{label:"Revenus",val:income,color:"var(--green)",bg:"var(--green-dim)",icon:"↓"},{label:"Dépenses",val:expns,color:"var(--red)",bg:"var(--red-dim)",icon:"↑"}].map(c=>(
             <div key={c.label} style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"16px" }}>
               <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
@@ -2451,7 +2484,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
       {/* Unpointed transactions warning modal */}
       {showUnpointedWarning && (
-        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+        <div style={S.overlay}
           onClick={e=>e.target===e.currentTarget&&setShowUnpointedWarning(false)}>
           <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid rgba(224,92,92,0.4)", padding:24 }}>
             <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
@@ -2479,7 +2512,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
       {/* Transfer confirmation modal */}
       {showTransferConfirm && (
-        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+        <div style={S.overlay}
           onClick={e=>e.target===e.currentTarget&&setShowTransferConfirm(false)}>
           <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
             <p style={{ fontSize:18, fontWeight:600, marginBottom:8 }}>Reporter le solde</p>
@@ -2489,7 +2522,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
               </strong> sera créée le 1er {nextMonthName} sur le compte <strong>{selAcct?.name}</strong>.
               {transferExists && <span style={{ display:"block", marginTop:8, color:"var(--gold)", fontSize:12 }}>⚠️ Un report existe déjà pour ce mois — il sera remplacé.</span>}
             </p>
-            <div style={{ display:"flex", gap:10 }}>
+            <div style={S.gap10}>
               <button onClick={()=>setShowTransferConfirm(false)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
               <button onClick={handleTransfer} style={{ flex:2, padding:"10px", borderRadius:"var(--radius-sm)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:14, fontWeight:700 }}>→ Confirmer le report</button>
             </div>
@@ -2603,6 +2636,7 @@ function Settings({ store, user }) {
   const [showAdd,            setShowAdd]          = useState(false);
   const [editingTplItem,     setEditingTplItem]   = useState(null);
   const [editingAccounts,    setEditingAccounts]  = useState(false);
+  const [showAddAccModal,    setShowAddAccModal]    = useState(false);
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [cleanupMessage,     setCleanupMessage]   = useState({ text: "", canDelete: false });
 
@@ -2710,30 +2744,30 @@ function Settings({ store, user }) {
         {/* Apparence */}
         <Section title="Apparence" icon="🎨">
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={S.flexRow10}>
               <span style={{ fontSize:22 }}>{theme==="dark"?"🌙":"☀️"}</span>
               <div>
-                <p style={{ fontSize:14, fontWeight:500 }}>{theme==="dark"?"Mode sombre":"Mode clair"}</p>
+                <p style={S.fs14fw500}>{theme==="dark"?"Mode sombre":"Mode clair"}</p>
                 <p style={{ fontSize:12, color:"var(--text-muted)" }}>Thème de l'interface</p>
               </div>
             </div>
             <Toggle checked={theme==="light"} onChange={toggle} />
           </div>
           <div style={{ borderTop:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={S.flexRow10}>
               <span style={{ fontSize:22 }}>🐛</span>
               <div>
-                <p style={{ fontSize:14, fontWeight:500 }}>Console de debug</p>
+                <p style={S.fs14fw500}>Console de debug</p>
                 <p style={{ fontSize:12, color:"var(--text-muted)" }}>Affiche les logs techniques en bas de l'écran</p>
               </div>
             </div>
             <Toggle checked={_isDebugEnabled()} onChange={()=>{ _setDebugEnabled(!_isDebugEnabled()); window.location.reload(); }} />
           </div>
           <div style={{ borderTop:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={S.flexRow10}>
               <span style={{ fontSize:22 }}>📅</span>
               <div>
-                <p style={{ fontSize:14, fontWeight:500 }}>Transactions futures dans l'historique</p>
+                <p style={S.fs14fw500}>Transactions futures dans l'historique</p>
                 <p style={{ fontSize:12, color:"var(--text-muted)" }}>
                   {store.showFutureTx ? "Affichées — toutes les transactions apparaissent" : "Masquées — seules les transactions passées et du jour apparaissent"}
                 </p>
@@ -2745,27 +2779,27 @@ function Settings({ store, user }) {
 
         {/* Comptes */}
         <Section title="Comptes bancaires" icon="🏦">
-          <div style={{ padding:"14px 16px" }}>
+          <div style={S.pad1416}>
             <p style={{ fontSize:12, color:"var(--text-muted)", marginBottom:12, lineHeight:1.6 }}>
               Gérez vos comptes (max. 15). Les soldes épargne 💰 sont saisis manuellement.
             </p>
             <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:12 }}>
               {/* Comptes courants */}
-              {store.accounts.filter(a=>a.type==="checking").length > 0 && editingAccounts && (
+              {store.accounts.filter(a=>a.type==="checking").length > 0 && (
                 <p style={{ fontSize:10, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em" }}>💳 Comptes courants</p>
               )}
               {store.accounts.filter(a=>a.type==="checking").map((acc)=>(
                 <AccountRow key={acc.id} acc={acc} store={store} editingAccounts={editingAccounts} />
               ))}
               {/* Comptes épargne */}
-              {store.accounts.filter(a=>a.type==="savings").length > 0 && editingAccounts && (
+              {store.accounts.filter(a=>a.type==="savings").length > 0 && (
                 <p style={{ fontSize:10, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", marginTop:4 }}>💰 Comptes épargne</p>
               )}
               {store.accounts.filter(a=>a.type==="savings").map((acc)=>(
                 <AccountRow key={acc.id} acc={acc} store={store} editingAccounts={editingAccounts} />
               ))}
               {/* Avantages */}
-              {store.accounts.filter(a=>a.type==="benefit").length > 0 && editingAccounts && (
+              {store.accounts.filter(a=>a.type==="benefit").length > 0 && (
                 <p style={{ fontSize:10, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", marginTop:4 }}>🎫 Avantages</p>
               )}
               {store.accounts.filter(a=>a.type==="benefit").map((acc)=>(
@@ -2775,9 +2809,9 @@ function Settings({ store, user }) {
             {!editingAccounts ? (
               <button onClick={()=>setEditingAccounts(true)} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--gold-dim)", border:"1px solid var(--gold)", color:"var(--gold)", fontSize:13, fontWeight:600 }}>✏️ Modifier les comptes</button>
             ) : (
-              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              <div style={S.flexCol8}>
                 {store.accounts.length<15 && (
-                  <button onClick={()=>store.addAccount()} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--green-dim)", border:"1px dashed var(--green)", color:"var(--green)", fontSize:13, fontWeight:600 }}>+ Ajouter un compte ({store.accounts.length}/15)</button>
+                  <button onClick={()=>setShowAddAccModal(true)} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--green-dim)", border:"1px dashed var(--green)", color:"var(--green)", fontSize:13, fontWeight:600 }}>+ Ajouter un compte ({store.accounts.length}/15)</button>
                 )}
                 <button onClick={()=>setEditingAccounts(false)} style={{ width:"100%", padding:"10px", borderRadius:"var(--radius-sm)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:14, fontWeight:700 }}>✓ Terminer</button>
               </div>
@@ -2842,11 +2876,11 @@ function Settings({ store, user }) {
 
         {/* Nettoyage */}
         <Section title="Nettoyage automatique" icon="🗑️">
-          <div style={{ padding:"14px 16px" }}>
+          <div style={S.pad1416}>
             {/* Toggle activation */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
               <div>
-                <p style={{ fontSize:14, fontWeight:500 }}>Nettoyage automatique</p>
+                <p style={S.fs14fw500}>Nettoyage automatique</p>
                 <p style={{ fontSize:12, color:"var(--text-muted)", marginTop:2 }}>
                   {store.autoCleanup ? "Actif — les transactions des mois passés sont supprimées automatiquement" : "Inactif — aucune suppression automatique"}
                 </p>
@@ -2857,7 +2891,7 @@ function Settings({ store, user }) {
             {/* Sélecteur de jour (grisé si désactivé) */}
             <div style={{ opacity: store.autoCleanup ? 1 : 0.4, pointerEvents: store.autoCleanup ? "auto" : "none", transition:"opacity 0.2s" }}>
               <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
-                <div style={{ flex:1 }}>
+                <div style={S.flex1}>
                   <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:6 }}>Jour de nettoyage</p>
                   <select value={store.cleanupDay} onChange={e=>store.updateCleanupDay(parseInt(e.target.value,10))}
                     style={{ fontSize:15, fontWeight:500, width:"100%", padding:"10px 12px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }}>
@@ -2873,7 +2907,7 @@ function Settings({ store, user }) {
               </div>
               {(store.cleanupDay === 29 || store.cleanupDay === 30) && (
                 <div style={{ display:"flex", gap:8, padding:"9px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8, marginBottom:12 }}>
-                  <span style={{ fontSize:13, flexShrink:0 }}>⚠️</span>
+                  <span style={S.fs13shrink0}>⚠️</span>
                   <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
                     Le nettoyage automatique pourrait ne pas fonctionner en février, qui ne compte pas de jour {store.cleanupDay}.
                   </p>
@@ -2881,7 +2915,7 @@ function Settings({ store, user }) {
               )}
               {store.cleanupDay === 31 && (
                 <div style={{ display:"flex", gap:8, padding:"9px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8, marginBottom:12 }}>
-                  <span style={{ fontSize:13, flexShrink:0 }}>⚠️</span>
+                  <span style={S.fs13shrink0}>⚠️</span>
                   <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
                     Le nettoyage automatique pourrait ne pas fonctionner certains mois — avril, juin, septembre, novembre et février ne comptent pas de 31e jour.
                   </p>
@@ -2897,11 +2931,11 @@ function Settings({ store, user }) {
 
         {/* Snapshots épargne */}
         <Section title="Snapshots épargne" icon="💰">
-          <div style={{ padding:"14px 16px" }}>
+          <div style={S.pad1416}>
             {/* Toggle activation */}
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
               <div>
-                <p style={{ fontSize:14, fontWeight:500 }}>Snapshots automatiques</p>
+                <p style={S.fs14fw500}>Snapshots automatiques</p>
                 <p style={{ fontSize:12, color:"var(--text-muted)", marginTop:2 }}>
                   {store.savingsSnapActive ? "Actifs — l'épargne est enregistrée automatiquement" : "Inactifs — aucun snapshot automatique"}
                 </p>
@@ -2938,7 +2972,7 @@ function Settings({ store, user }) {
               </div>
               {store.savingsSnapDays.some(d => d === 29 || d === 30) && !store.savingsSnapDays.includes(31) && (
                 <div style={{ display:"flex", gap:8, padding:"9px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8, marginTop:10 }}>
-                  <span style={{ fontSize:13, flexShrink:0 }}>⚠️</span>
+                  <span style={S.fs13shrink0}>⚠️</span>
                   <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
                     Le snapshot automatique du {store.savingsSnapDays.filter(d => d === 29 || d === 30).join(" et du ")} pourrait ne pas se déclencher en février.
                   </p>
@@ -2946,7 +2980,7 @@ function Settings({ store, user }) {
               )}
               {store.savingsSnapDays.includes(31) && (
                 <div style={{ display:"flex", gap:8, padding:"9px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8, marginTop:10 }}>
-                  <span style={{ fontSize:13, flexShrink:0 }}>⚠️</span>
+                  <span style={S.fs13shrink0}>⚠️</span>
                   <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
                     Le snapshot automatique du 31 pourrait ne pas se déclencher certains mois — avril, juin, septembre, novembre et février ne comptent pas de 31e jour.
                     {store.savingsSnapDays.some(d => d === 29 || d === 30) && ` Les jours ${store.savingsSnapDays.filter(d => d === 29 || d === 30).join(" et ")} pourraient également ne pas se déclencher en février.`}
@@ -2959,7 +2993,7 @@ function Settings({ store, user }) {
 
         {/* Données */}
         <Section title="Données" icon="💾">
-          <div style={{ padding:"14px 16px" }}>
+          <div style={S.pad1416}>
             <p style={{ fontSize:13, color:"var(--text-muted)", marginBottom:4 }}>{store.transactions.length} transactions · synchronisées sur Firebase</p>
             <p style={{ fontSize:12, color:"var(--text-sub)", marginBottom:12 }}>Connecté en tant que {user.email}</p>
             {store.isDemo && (
@@ -2976,15 +3010,16 @@ function Settings({ store, user }) {
       </div>
 
       {showAdd && <TplAddModal onClose={()=>setShowAdd(false)} onSave={item=>{store.addTplItem(activeAccountId, activeParity, item);setShowAdd(false);}} />}
+      {showAddAccModal && <AddAccountModal store={store} onClose={()=>setShowAddAccModal(false)} />}
       {editingTplItem && <TplAddModal item={editingTplItem.item} onClose={()=>setEditingTplItem(null)} onSave={updates=>{store.updateTplItem(activeAccountId, editingTplItem.parity, editingTplItem.item.id, updates);setEditingTplItem(null);}} />}
 
       {showCleanupConfirm && (
-        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+        <div style={S.overlay}
           onClick={e=>e.target===e.currentTarget&&setShowCleanupConfirm(false)}>
           <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
-            <p style={{ fontSize:18, fontWeight:600, marginBottom:12 }}>Confirmation</p>
+            <p style={S.modalTitle}>Confirmation</p>
             <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>{cleanupMessage.text}</p>
-            <div style={{ display:"flex", gap:10 }}>
+            <div style={S.gap10}>
               <button onClick={()=>setShowCleanupConfirm(false)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
               {cleanupMessage.canDelete && <button onClick={confirmCleanup} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>}
             </div>
@@ -3016,6 +3051,89 @@ function Toggle({ checked, onChange }) {
   );
 }
 
+
+// ─── AddAccountModal ───────────────────────────────────────────────────────
+function AddAccountModal({ store, onClose }) {
+  const [accType,       setAccType]       = React.useState("checking");
+  const [accName,       setAccName]       = React.useState("");
+  const [savingsSubtype, setSavingsSubtype] = React.useState("available");
+  const hasBenefit = store.accounts.some(a => a.type === "benefit");
+
+  const handleConfirm = () => {
+    const name = accName.trim() || null;
+    store.addAccount({ type: accType, name, savingsSubtype: accType === "savings" ? savingsSubtype : undefined });
+    onClose();
+  };
+
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:200, display:"flex", alignItems:"flex-end", background:"rgba(0,0,0,0.55)" }}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ width:"100%", maxWidth:500, margin:"0 auto", background:"var(--surface)", borderRadius:"var(--radius) var(--radius) 0 0", padding:"20px 20px 32px", display:"flex", flexDirection:"column", gap:16 }}>
+        {/* Handle */}
+        <div style={{ width:36, height:4, borderRadius:2, background:"var(--border2)", margin:"0 auto -8px" }} />
+        <p style={{ fontSize:16, fontWeight:700, textAlign:"center" }}>➕ Nouveau compte</p>
+
+        {/* Choix du type */}
+        <div>
+          <p style={{ fontSize:11, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Type de compte</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+            {[["checking","💳","Courant"],["savings","💰","Épargne"],["benefit","🎫","Avantage"]].map(([type,icon,label])=>{
+              const isCurrent = accType === type;
+              const isDisabled = type === "benefit" && hasBenefit;
+              return (
+                <button key={type} onClick={()=>{ if(!isDisabled) setAccType(type); }}
+                  title={isDisabled ? "Un seul compte Avantage est autorisé" : undefined}
+                  style={{ padding:"12px 6px", borderRadius:"var(--radius-sm)", border:"1px solid",
+                    borderColor:isCurrent?"var(--gold)":"var(--border)",
+                    background:isCurrent?"var(--gold-dim)":"var(--surface2)",
+                    color:isCurrent?"var(--gold)":isDisabled?"var(--text-sub)":"var(--text-muted)",
+                    fontSize:13, fontWeight:600, opacity:isDisabled?0.4:1,
+                    cursor:isDisabled?"not-allowed":"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                  <span style={{ fontSize:20 }}>{icon}</span>
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Sous-type épargne */}
+        {accType === "savings" && (
+          <div>
+            <p style={{ fontSize:11, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Disponibilité</p>
+            <div style={S.grid2col8}>
+              {[["available","var(--green)","var(--green-dim)","✓ Disponible"],["blocked","var(--red)","var(--red-dim)","🔒 Bloquée"]].map(([st,col,bg,lbl])=>(
+                <button key={st} onClick={()=>setSavingsSubtype(st)}
+                  style={{ padding:"10px", borderRadius:"var(--radius-sm)", border:"1px solid",
+                    borderColor:savingsSubtype===st?col:"var(--border)",
+                    background:savingsSubtype===st?bg:"var(--surface2)",
+                    color:savingsSubtype===st?col:"var(--text-muted)",
+                    fontSize:12, fontWeight:600 }}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Nom */}
+        <div>
+          <p style={{ fontSize:11, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:8 }}>Nom du compte</p>
+          <input value={accName} onChange={e=>setAccName(e.target.value)}
+            placeholder={accType==="checking"?"ex : Compte principal":accType==="savings"?"ex : Livret A":"ex : Ticket Restaurant"}
+            style={{ width:"100%", fontSize:14, padding:"10px 12px", background:"var(--bg)", border:"1px solid var(--border)", borderRadius:8, color:"var(--text)" }} />
+        </div>
+
+        {/* Boutons */}
+        <div style={{ display:"flex", gap:10, marginTop:4 }}>
+          <button onClick={onClose}
+            style={{ flex:1, padding:"12px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text-muted)", fontSize:14, fontWeight:600 }}>Annuler</button>
+          <button onClick={handleConfirm}
+            style={{ flex:2, padding:"12px", borderRadius:"var(--radius-sm)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:14, fontWeight:700 }}>✓ Créer</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── AccountRow ────────────────────────────────────────────────────────────
 function AccountRow({ acc, store, editingAccounts }) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -3035,10 +3153,10 @@ function AccountRow({ acc, store, editingAccounts }) {
   return (
     <div style={{ background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:"12px 14px" }}>
       {!editingAccounts ? (
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <div style={S.flexRow10}>
           <span style={{ fontSize:20 }}>{acc.type==="savings"?"💰":acc.type==="benefit"?"🎫":"💳"}</span>
-          <div style={{ flex:1 }}>
-            <p style={{ fontSize:14, fontWeight:500 }}>{acc.name}</p>
+          <div style={S.flex1}>
+            <p style={S.fs14fw500}>{acc.name}</p>
             <p style={{ fontSize:11, color:"var(--text-muted)" }}>
               {acc.type==="savings"
                 ? (acc.savingsSubtype==="blocked" ? "🔒 Bloquée — " : "✓ Disponible — ") + fmtEur(acc.balance)
@@ -3049,7 +3167,7 @@ function AccountRow({ acc, store, editingAccounts }) {
           </div>
         </div>
       ) : (
-        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        <div style={S.flexCol8}>
           {/* Nom + boutons ordre + supprimer */}
           <div style={{ display:"flex", gap:6 }}>
             <input value={acc.name} onChange={e=>store.updateAccount(acc.id,{name:e.target.value})} placeholder="Nom du compte"
@@ -3131,7 +3249,7 @@ function AccountRow({ acc, store, editingAccounts }) {
           )}
           {/* Plafond journalier + compte de report (avantages uniquement) */}
           {acc.type==="benefit" && (
-            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            <div style={S.flexCol8}>
               <div>
                 <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>Plafond journalier (€) <span style={{ fontWeight:400, textTransform:"none" }}>— optionnel</span></label>
                 <input type="number" step="0.01" min="0" value={acc.dailyCap||""} onChange={e=>store.updateAccount(acc.id,{dailyCap:parseFloat(e.target.value)||0})} placeholder="ex : 25.00"
@@ -3165,14 +3283,14 @@ function AccountRow({ acc, store, editingAccounts }) {
       )}
 
       {showDeleteConfirm && (
-        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+        <div style={S.overlay}
           onClick={e=>e.target===e.currentTarget&&setShowDeleteConfirm(false)}>
           <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
-            <p style={{ fontSize:18, fontWeight:600, marginBottom:12 }}>Supprimer le compte</p>
+            <p style={S.modalTitle}>Supprimer le compte</p>
             <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
               Le compte « {acc.name} » contient <strong style={{ color:"var(--red)" }}>{txCount} transaction{txCount>1?"s":""}</strong> qui {txCount>1?"seront également supprimées":"sera également supprimée"}.
             </p>
-            <div style={{ display:"flex", gap:10 }}>
+            <div style={S.gap10}>
               <button onClick={()=>setShowDeleteConfirm(false)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
               <button onClick={()=>{store.removeAccount(acc.id);setShowDeleteConfirm(false);}} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>
             </div>
@@ -3189,7 +3307,7 @@ function TplItemRow({ item, onDelete, onEdit }) {
     <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}
       style={{ display:"flex", alignItems:"center", gap:12, padding:"11px 16px", background:hover?"rgba(128,128,128,0.04)":"transparent", transition:"background 0.15s" }}>
       <div style={{ width:36,height:36, borderRadius:9, flexShrink:0, background:item.type==="expense"?"var(--red-dim)":"var(--green-dim)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>{item.type==="expense"?"↑":"↓"}</div>
-      <div style={{ flex:1, minWidth:0 }}>
+      <div style={S.flex1MinW0}>
         <p style={{ fontSize:14, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item.title}</p>
         <p style={{ fontSize:11, color:"var(--text-sub)" }}>
           Le {item.day||1}{(item.day||1)===1?"er":""} du mois
@@ -3232,7 +3350,7 @@ function TplAddModal({ onClose, onSave, item }) {
     onSave({title:title.trim(),amount:amt,type,day:parseInt(day,10),note});
   };
   return (
-    <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+    <div style={S.overlay}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", overflow:"hidden" }}>
         <div style={{ background:"var(--surface2)", padding:"16px 20px", borderBottom:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -3360,7 +3478,7 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
           {isEditing && !transaction?.isCard && !transaction?._transferFrom && (
             <div style={{ background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"12px 14px" }}>
               <p style={{ fontSize:11, color:"var(--text-sub)", fontWeight:600, letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:10 }}>Ajustement</p>
-              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <div style={S.flexRow8}>
                 {/* Boutons +/− */}
                 <div style={{ display:"flex", flexDirection:"column", gap:4, flexShrink:0 }}>
                   {["+","-"].map(s=>{
@@ -3413,7 +3531,7 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
             </div>
           )}
           <Field label="Libellé"><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex : Courses, Salaire…" style={{ fontSize:15, width:"100%", padding:"0 2px" }} /></Field>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <div style={S.grid2col10}>
             <Field label="Compte">
               <select value={selAcctId} onChange={e=>setSelAcctId(e.target.value)} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
                 {store.accounts.filter(a=>a.type==="checking").map(a=><option key={a.id} value={a.id} style={{ background:"var(--select-bg)" }}>💳 {a.name}</option>)}
@@ -3425,7 +3543,7 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
           {/* Card toggle — only shown if account has a card */}
           {acctHasCard && (
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", background:asCard?"rgba(201,168,76,0.06)":"var(--surface2)", border:`1px solid ${asCard?"rgba(201,168,76,0.3)":"var(--border)"}`, borderRadius:"var(--radius-sm)", transition:"all 0.2s" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={S.flexRow10}>
                 <span style={{ fontSize:18 }}>🃏</span>
                 <div>
                   <p style={{ fontSize:13, fontWeight:600, color:asCard?"var(--gold)":"var(--text)" }}>Imputer sur la carte</p>
@@ -3491,7 +3609,7 @@ function SavingsSnapshotModal({ snapshot, defaults, onClose, onSave }) {
           <Field label="Date">
             <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{ fontSize:14, width:"100%", colorScheme:"var(--colorscheme)", color:"var(--text)" }} />
           </Field>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+          <div style={S.grid2col10}>
             <Field label="Épargne disponible (€)">
               <input type="number" step="0.01" value={available} onChange={e=>setAvailable(e.target.value)} placeholder="0.00" inputMode="decimal"
                 style={{ fontSize:15, width:"100%", color:"var(--green)" }} />
@@ -3506,7 +3624,7 @@ function SavingsSnapshotModal({ snapshot, defaults, onClose, onSave }) {
           </Field>
           {!isNew && (
             <div style={{ display:"flex", gap:8, padding:"10px 12px", background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:8 }}>
-              <span style={{ fontSize:14, flexShrink:0 }}>ℹ️</span>
+              <span style={S.fs14shrink0}>ℹ️</span>
               <p style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5 }}>
                 Cette modification ne porte que sur ce snapshot historique. Les soldes actuels de vos comptes épargne ne seront pas affectés.
               </p>
@@ -3771,7 +3889,7 @@ function SavingsStats({ store, onBack }) {
               <div key={row.id} className="fade-up" style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden", animationDelay:`${i*0.03}s` }}>
                 {/* Date + actions header */}
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px", background:"var(--surface2)", borderBottom:"1px solid var(--border)" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={S.flexRow8}>
                     <span style={{ fontFamily:"'DM Serif Display',serif", fontSize:15, fontWeight:600, color:"var(--gold)" }}>{fmtSnapshotDate(row.date)}</span>
                     {row.auto && <span style={{ fontSize:10, padding:"2px 6px", borderRadius:4, background:"var(--gold-dim)", color:"var(--gold)", fontWeight:600 }}>🤖 Auto</span>}
                     {row.note && <span style={{ fontSize:11, color:"var(--text-muted)", fontStyle:"italic" }}>{row.note}</span>}
@@ -3813,14 +3931,14 @@ function SavingsStats({ store, onBack }) {
       {showModal    && <SavingsSnapshotModal defaults={{ available: totalAvailable, blocked: totalBlocked }} onClose={()=>setShowModal(false)}    onSave={handleSaveNew} />}
       {editSnapshot && <SavingsSnapshotModal snapshot={editSnapshot} onClose={()=>setEditSnapshot(null)} onSave={handleSaveEdit} />}
       {deleteSnap   && (
-        <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}
+        <div style={S.overlay}
           onClick={e=>e.target===e.currentTarget&&setDeleteSnap(null)}>
           <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
-            <p style={{ fontSize:18, fontWeight:600, marginBottom:12 }}>Supprimer cette entrée</p>
+            <p style={S.modalTitle}>Supprimer cette entrée</p>
             <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>
               Supprimer l'entrée du <strong>{fmtSnapshotDate(deleteSnap.date)}</strong> ? Cette action est irréversible.
             </p>
-            <div style={{ display:"flex", gap:10 }}>
+            <div style={S.gap10}>
               <button onClick={()=>setDeleteSnap(null)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
               <button onClick={()=>{store.removeSavingsSnapshot(deleteSnap.id);setDeleteSnap(null);}} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>
             </div>
