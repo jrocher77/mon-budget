@@ -1192,6 +1192,7 @@ function App() {
   const [tab,        setTab]     = useState("dashboard");
   const [showForm,   setForm]    = useState(false);
   const [formAccount,setFormAcc] = useState(null);
+  const [formSel,    setFormSel] = useState(null);
   const [theme,      setTheme]   = useState(() => { try { return localStorage.getItem("budget_theme") || "dark"; } catch { return "dark"; } });
 
   const store = useStore(user?.uid, user?.email);
@@ -1288,7 +1289,7 @@ function App() {
     return <LoadingScreen />;
   }
 
-  const handleOpenForm = (account=null) => { setFormAcc(account); setForm(true); };
+  const handleOpenForm = (account=null, sel=null) => { setFormAcc(account); setFormSel(sel); setForm(true); };
 
   return (
     <ThemeCtx.Provider value={{ theme, toggle:()=>setTheme(t=>t==="dark"?"light":"dark") }}>
@@ -1314,7 +1315,7 @@ function App() {
           {tab==="savingsStats"  && <SavingsStats store={store} onBack={()=>setTab("dashboard")} />}
         </div>
         <TabBar tab={tab === "savingsStats" ? "dashboard" : tab} setTab={setTab} />
-        {showForm && <FormModal store={store} account={formAccount} onClose={()=>setForm(false)} />}
+        {showForm && <FormModal store={store} account={formAccount} sel={formSel} onClose={()=>setForm(false)} />}
       </div>
     </ThemeCtx.Provider>
   );
@@ -1447,8 +1448,9 @@ function TxRow({ tx, deletable, onDelete, onEdit, onTogglePointed, clicked, onTo
       <div style={S.flex1MinW0}>
         <p style={{ fontSize:14, fontWeight:500, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
           {tx.title}
-          {(tx.isCard || isCard) && <span style={{ marginLeft:6, fontSize:10, color:"var(--gold)", background:"rgba(201,168,76,0.12)", padding:"1px 5px", borderRadius:4, fontWeight:600, border:"1px solid rgba(201,168,76,0.25)" }}>🃏 carte</span>}
+          {(tx.isCard || isCard) && <span style={{ marginLeft:6, fontSize:10, color:"var(--gold)", background:"rgba(201,168,76,0.12)", padding:"1px 5px", borderRadius:4, fontWeight:600, border:"1px solid rgba(201,168,76,0.25)" }}>💳 carte</span>}
           {tx._transferFrom && <span style={{ marginLeft:6, fontSize:10, color:"var(--green)", background:"var(--green-dim)", padding:"1px 5px", borderRadius:4, fontWeight:600 }}>→ report</span>}
+          {tx._virementId && <span style={{ marginLeft:6, fontSize:10, color:"var(--text-muted)", background:"var(--surface3)", padding:"1px 5px", borderRadius:4, fontWeight:600 }}>⇄ virement</span>}
           {tx._tpl && !tx.pointed && <span style={{ marginLeft:6, fontSize:10, color:"var(--gold)", background:"var(--gold-dim)", padding:"1px 5px", borderRadius:4, fontWeight:600 }}>modèle</span>}
         </p>
         <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:1 }}>
@@ -1517,7 +1519,7 @@ function CardPanel({ account, sel, cardTxM, cardTotal, cardDebitDate, isDebitNex
     <div className="fade-up" style={{ background:"var(--surface)", border:"1px solid rgba(201,168,76,0.3)", borderRadius:"var(--radius)", overflow:"hidden" }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px", background:"linear-gradient(90deg, rgba(201,168,76,0.08), transparent)", borderBottom:"1px solid rgba(201,168,76,0.15)" }}>
-        <span style={{ fontSize:20 }}>🃏</span>
+        <span style={{ fontSize:20 }}>💳</span>
         <div style={S.flex1}>
           <p style={{ fontSize:13, fontWeight:700, color:"var(--gold)" }}>{account.cardName}</p>
           <p style={{ fontSize:11, color:"var(--text-muted)" }}>Carte à débit différé · {monthLabel}</p>
@@ -1941,7 +1943,7 @@ function BenefitModal({ store, account, onClose }) {
                         <span style={{ fontSize:12, fontWeight:700, color:"var(--green)" }}>{fmtEur(partTR)}</span>
                       </div>
                       <div style={{ display:"flex", justifyContent:"space-between" }}>
-                        <span style={{ fontSize:12, color:"var(--text-muted)" }}>🃏 {overflowAcct.name}</span>
+                        <span style={{ fontSize:12, color:"var(--text-muted)" }}>💳 {overflowAcct.name}</span>
                         <span style={{ fontSize:12, fontWeight:700, color:"var(--red)" }}>{fmtEur(partCarte)}</span>
                       </div>
                     </div>
@@ -2065,7 +2067,7 @@ function SynthCardPanel({ entry, sourceTxs, clickedTxId, setClickedTxId, store, 
   return (
     <div className="fade-up" style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden" }}>
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px", background:"var(--surface2)", borderBottom:"1px solid var(--border)" }}>
-        <span style={{ fontSize:18 }}>🃏</span>
+        <span style={{ fontSize:18 }}>💳</span>
         <div style={S.flex1}>
           <p style={S.fs13fw600}>Prélèvement {entry.cardName}</p>
           <p style={{ fontSize:11, color:"var(--text-muted)" }}>Dépenses de {entry.sourceMonthName} · prélevé le {fmtDate(entry.debitDateStr)}</p>
@@ -2389,7 +2391,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
                   <div key={account.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:"var(--surface2)", borderRadius:"var(--radius-sm)" }}>
                     <div style={S.flexRow8}>
                       <span style={{ fontSize:13, fontWeight:500 }}>{account.name}</span>
-                      {account.cardName && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:4, background:"rgba(201,168,76,0.12)", color:"var(--gold)", fontWeight:600, border:"1px solid rgba(201,168,76,0.25)" }}>🃏 {account.cardName}</span>}
+                      {account.cardName && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:4, background:"rgba(201,168,76,0.12)", color:"var(--gold)", fontWeight:600, border:"1px solid rgba(201,168,76,0.25)" }}>💳 {account.cardName}</span>}
                     </div>
                     <span style={{ fontSize:14, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:balance>=0?"var(--green)":"var(--red)" }}>{fmtEur(balance)}</span>
                   </div>
@@ -2463,7 +2465,7 @@ function Dashboard({ store, onAdd, onGoSavings }) {
         <div className="fade-up">
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
             <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.06em", textTransform:"uppercase" }}>Récents</p>
-            <button onClick={()=>onAdd(selectedAccountId==="all" ? null : selectedAccountId)} style={{ background:"none", border:"none", color:"var(--gold)", fontSize:13, fontWeight:600, padding:0, cursor:"pointer" }}>+ Ajouter</button>
+            <button onClick={()=>onAdd(selectedAccountId==="all" ? null : selectedAccountId, sel)} style={{ background:"none", border:"none", color:"var(--gold)", fontSize:13, fontWeight:600, padding:0, cursor:"pointer" }}>+ Ajouter</button>
           </div>
           {txM.length===0 ? <EmptyState text="Aucune transaction ce mois-ci" />
             : <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden" }}>
@@ -2477,9 +2479,9 @@ function Dashboard({ store, onAdd, onGoSavings }) {
         </div>
       </div>
 
-      {editingTx && <FormModal store={store} transaction={editingTx} onClose={()=>setEditingTx(null)} />}
+      {editingTx && <FormModal store={store} transaction={editingTx} sel={sel} onClose={()=>setEditingTx(null)} />}
       {deletingTx && <DeleteModal tx={deletingTx} onCancel={()=>setDeletingTx(null)} onConfirm={()=>{store.remove(deletingTx.id);setDeletingTx(null);}} />}
-      {cardFormAccount && <FormModal store={store} account={cardFormAccount} isCardTransaction onClose={()=>setCardFormAccount(null)} />}
+      {cardFormAccount && <FormModal store={store} account={cardFormAccount} isCardTransaction sel={sel} onClose={()=>setCardFormAccount(null)} />}
       {benefitAccount && <BenefitModal store={store} account={benefitAccount} onClose={()=>setBenefitAccount(null)} />}
 
       {/* Unpointed transactions warning modal */}
@@ -2582,7 +2584,7 @@ function Transactions({ store, onAdd }) {
       <div style={{ padding:"12px 16px 0" }}>
         {/* Type filters */}
         <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:2, marginBottom:8 }}>
-          {[["all","Tout"],["expense","Dépenses"],["income","Revenus"], ...(hasAnyCard ? [["card","🃏 Carte"]] : [])].map(([v,l])=>(
+          {[["all","Tout"],["expense","Dépenses"],["income","Revenus"], ...(hasAnyCard ? [["card","💳 Carte"]] : [])].map(([v,l])=>(
             <button key={v} onClick={()=>setFilter(v)} style={{ flexShrink:0, padding:"6px 14px", borderRadius:20, border:"1px solid", borderColor:filterType===v?"var(--gold)":"var(--border)", background:filterType===v?"var(--gold-dim)":"var(--surface2)", color:filterType===v?"var(--gold)":"var(--text-muted)", fontSize:13, fontWeight:600, transition:"all 0.2s" }}>{l}</button>
           ))}
         </div>
@@ -3219,7 +3221,7 @@ function AccountRow({ acc, store, editingAccounts }) {
           {/* Carte à débit différé (comptes courants uniquement) */}
           {acc.type==="checking" && (
             <div>
-              <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>🃏 Carte à débit différé</label>
+              <label style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>💳 Carte à débit différé</label>
               <div style={{ display:"flex", gap:6, alignItems:"center" }}>
                 <input
                   value={acc.cardName||""}
@@ -3392,61 +3394,118 @@ function TplAddModal({ onClose, onSave, item }) {
 }
 
 // ─── FormModal ─────────────────────────────────────────────────────────────
-function FormModal({ store, account, transaction, onClose, isCardTransaction=false }) {
+// Helper : solde d'un compte pour un mois donné (toutes transactions incluses)
+function useAccountMonthBalance(store, accountId, monthKey) {
+  return useMemo(() => {
+    if (!accountId || !monthKey) return null;
+    const txs = store.transactions.filter(t => t.accountId === accountId && t.date.slice(0,7) === monthKey);
+    const inc = txs.filter(t => t.type === "income").reduce((s,t)=>s+t.amount, 0);
+    const exp = txs.filter(t => t.type === "expense").reduce((s,t)=>s+t.amount, 0);
+    return inc - exp;
+  }, [store.transactions, accountId, monthKey]);
+}
+
+function FormModal({ store, account, transaction, onClose, isCardTransaction=false, sel=null }) {
   const isEditing = !!transaction;
-  // Determine if this is/was a card transaction
   const startAsCard = isCardTransaction || (transaction?.isCard === true);
 
-  const [type,     setType]     = useState(transaction?.type||"expense");
-  const [title,    setTitle]    = useState(transaction?.title||"");
-  const [amount,   setAmount]   = useState(transaction?.amount?.toString()||"");
-  const [selAcctId,setSelAcctId]= useState(transaction?.accountId||account||store.accounts.find(a=>a.type==="checking")?.id||"");
-  const [date,     setDate]     = useState(transaction?.date||new Date().toISOString().split("T")[0]);
-  const [note,     setNote]     = useState(transaction?.note||"");
-  const [asCard,   setAsCard]   = useState(startAsCard);
-  const [error,    setError]    = useState("");
+  // Date par défaut : si sel correspond à un mois futur, on ouvre sur le 1er du mois filtré.
+  const defaultDate = (() => {
+    if (transaction?.date) return transaction.date;
+    const today = new Date().toISOString().split("T")[0];
+    if (!sel) return today;
+    const nowMk = today.slice(0, 7);
+    if (sel > nowMk) return sel + "-01";
+    return today;
+  })();
 
-  // Ajustement de montant (mode édition uniquement)
-  const [adjValue,  setAdjValue]  = useState("");   // valeur saisie (abs)
-  const [adjSign,   setAdjSign]   = useState("+");  // "+" ou "-"
-  const adjNum = parseFloat(adjValue.replace(",","."));
-  const baseNum = parseFloat(amount.replace(",","."));
-  const adjResult = (!isNaN(baseNum) && !isNaN(adjNum) && adjValue.trim() !== "")
-    ? (adjSign === "+" ? baseNum + adjNum : baseNum - adjNum)
-    : null;
-  const adjResultValid = adjResult !== null && adjResult !== 0;
-  // Le résultat bascule le type si négatif
-  const adjFlipsType  = adjResultValid && adjResult < 0;
-  const adjFinalType  = adjFlipsType ? (type === "expense" ? "income" : "expense") : type;
-  const adjFinalAmt   = adjResultValid ? Math.round(Math.abs(adjResult) * 100) / 100 : null;
+  const checkingAccounts = store.accounts.filter(a => a.type === "checking");
+  const firstAcctId  = transaction?.accountId || account || checkingAccounts[0]?.id || "";
+  const secondAcctId = checkingAccounts.find(a => a.id !== firstAcctId)?.id || "";
 
+  const [mode,      setMode]      = useState(transaction ? (transaction._virementId ? "transfer" : transaction.type) : "expense");
+  const [title,     setTitle]     = useState(transaction?.title || "");
+  const [amount,    setAmount]    = useState(transaction?.amount?.toString() || "");
+  const [srcAcctId, setSrcAcctId] = useState(firstAcctId);
+  const [dstAcctId, setDstAcctId] = useState(secondAcctId);
+  const [date,      setDate]      = useState(defaultDate);
+  const [note,      setNote]      = useState(transaction?.note || "");
+  const [asCard,    setAsCard]    = useState(startAsCard);
+  const [error,     setError]     = useState("");
+
+  const isTransfer = mode === "transfer";
+
+  // Compte unique (modes dépense/revenu)
+  const selAcctId    = srcAcctId;
+  const selAcct      = store.accounts.find(a => a.id === selAcctId);
+  const acctHasCard  = !isTransfer && selAcct?.type === "checking" && selAcct?.cardName;
+
+  useEffect(() => { if (!acctHasCard) setAsCard(false); }, [selAcctId, acctHasCard]);
+
+  // Ajustement (édition uniquement)
+  const [adjValue, setAdjValue] = useState("");
+  const [adjSign,  setAdjSign]  = useState("+");
+  const adjNum        = parseFloat(adjValue.replace(",","."));
+  const baseNum       = parseFloat(amount.replace(",","."));
+  const adjResult     = (!isNaN(baseNum) && !isNaN(adjNum) && adjValue.trim() !== "")
+    ? (adjSign === "+" ? baseNum + adjNum : baseNum - adjNum) : null;
+  const adjResultValid  = adjResult !== null && adjResult !== 0;
+  const adjFlipsType    = adjResultValid && adjResult < 0;
+  const adjFinalType    = adjFlipsType ? (mode === "expense" ? "income" : "expense") : mode;
+  const adjFinalAmt     = adjResultValid ? Math.round(Math.abs(adjResult) * 100) / 100 : null;
   const applyAdj = () => {
     if (!adjResultValid) return;
     setAmount(String(adjFinalAmt));
-    if (adjFlipsType) setType(adjFinalType);
-    setAdjValue("");
-    setAdjSign("+");
+    if (adjFlipsType) setMode(adjFinalType);
+    setAdjValue(""); setAdjSign("+");
   };
 
-  // Check if the selected account has a card
-  const selAcct = store.accounts.find(a=>a.id===selAcctId);
-  const acctHasCard = selAcct?.type==="checking" && selAcct?.cardName;
+  // ── Soldes prévisionnels ────────────────────────────────────────────────
+  const dateMKey     = date ? date.slice(0, 7) : null;
+  const parsedAmount = parseFloat(amount.replace(",","."));
+  const amountValid  = !isNaN(parsedAmount) && parsedAmount > 0;
 
-  // If account changes and new account has no card, reset asCard
-  useEffect(() => {
-    if (!acctHasCard) setAsCard(false);
-  }, [selAcctId, acctHasCard]);
+  const srcBalance = useAccountMonthBalance(store, srcAcctId, dateMKey);
+  const dstBalance = useAccountMonthBalance(store, isTransfer ? dstAcctId : null, dateMKey);
 
+  const srcForecast = useMemo(() => {
+    if (srcBalance === null || !amountValid) return null;
+    let base = srcBalance;
+    if (isEditing && !isTransfer) {
+      base += transaction.type === "income" ? -transaction.amount : transaction.amount;
+    }
+    const delta = isTransfer ? -parsedAmount : (mode === "income" ? parsedAmount : -parsedAmount);
+    return base + delta;
+  }, [srcBalance, amountValid, parsedAmount, mode, isTransfer, isEditing, transaction]);
+
+  const dstForecast = useMemo(() => {
+    if (!isTransfer || dstBalance === null || !amountValid) return null;
+    return dstBalance + parsedAmount;
+  }, [isTransfer, dstBalance, amountValid, parsedAmount]);
+
+  // ── Soumission ──────────────────────────────────────────────────────────
   const handleSubmit = () => {
     if (!title.trim()) return setError("Veuillez saisir un libellé.");
     const amt = parseFloat(amount.replace(",","."));
-    if (isNaN(amt)||amt<=0) return setError("Montant invalide.");
-    if (!selAcctId) return setError("Veuillez sélectionner un compte.");
-    const txData = { title:title.trim(), amount:amt, type, accountId:selAcctId, date, note, isCard: acctHasCard ? asCard : false };
-    if (isEditing) store.update(transaction.id, txData);
-    else store.add(txData);
+    if (isNaN(amt) || amt <= 0) return setError("Montant invalide.");
+    if (isTransfer) {
+      if (!srcAcctId) return setError("Veuillez sélectionner un compte source.");
+      if (!dstAcctId) return setError("Veuillez sélectionner un compte destination.");
+      if (srcAcctId === dstAcctId) return setError("Les deux comptes doivent être différents.");
+      const vid = genId();
+      store.add({ title: title.trim(), amount: amt, type: "expense", accountId: srcAcctId, date, note, isCard: false, _virementId: vid });
+      store.add({ title: title.trim(), amount: amt, type: "income",  accountId: dstAcctId, date, note, isCard: false, _virementId: vid });
+    } else {
+      if (!selAcctId) return setError("Veuillez sélectionner un compte.");
+      const txData = { title: title.trim(), amount: amt, type: mode, accountId: selAcctId, date, note, isCard: acctHasCard ? asCard : false };
+      if (isEditing) store.update(transaction.id, txData);
+      else store.add(txData);
+    }
     onClose();
   };
+
+  // Couleur du montant selon le mode
+  const amountColor = isTransfer ? "var(--text)" : mode === "expense" ? "var(--red)" : "var(--green)";
 
   return (
     <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"flex-end" }}
@@ -3456,95 +3515,117 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
           <div style={{ width:36,height:4, borderRadius:2, background:"var(--border)" }} />
         </div>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 20px 16px" }}>
-          <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:22 }}>{isEditing?"Modifier":"Nouvelle transaction"}</p>
+          <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:22 }}>{isEditing ? "Modifier" : "Nouvelle transaction"}</p>
           <button onClick={onClose} style={{ background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:8, width:32,height:32, color:"var(--text-muted)", fontSize:16, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
         </div>
         <div style={{ padding:"0 20px", display:"flex", flexDirection:"column", gap:14 }}>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:4 }}>
-            {[["expense","Dépense","var(--red)"],["income","Revenu","var(--green)"]].map(([v,l,c])=>(
-              <button key={v} onClick={()=>setType(v)} style={{ padding:"9px", borderRadius:8, background:type===v?c+"22":"transparent", border:`1px solid ${type===v?c:"transparent"}`, color:type===v?c:"var(--text-muted)", fontSize:14, fontWeight:600 }}>{l}</button>
-            ))}
-          </div>
+
+          {/* ── Sélecteur de mode ── */}
+          {!isEditing && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:4 }}>
+              {[["expense","Dépense","var(--red)"],["income","Revenu","var(--green)"],["transfer","Virement","var(--gold)"]].map(([v,l,c])=>(
+                <button key={v} onClick={()=>setMode(v)} style={{ padding:"9px", borderRadius:8, background:mode===v?c+"22":"transparent", border:`1px solid ${mode===v?c:"transparent"}`, color:mode===v?c:"var(--text-muted)", fontSize:13, fontWeight:600 }}>{l}</button>
+              ))}
+            </div>
+          )}
+          {isEditing && !isTransfer && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:4 }}>
+              {[["expense","Dépense","var(--red)"],["income","Revenu","var(--green)"]].map(([v,l,c])=>(
+                <button key={v} onClick={()=>setMode(v)} style={{ padding:"9px", borderRadius:8, background:mode===v?c+"22":"transparent", border:`1px solid ${mode===v?c:"transparent"}`, color:mode===v?c:"var(--text-muted)", fontSize:14, fontWeight:600 }}>{l}</button>
+              ))}
+            </div>
+          )}
+
+          {/* ── Montant ── */}
           <div style={{ background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"14px 16px" }}>
             <p style={{ fontSize:11, color:"var(--text-sub)", fontWeight:600, letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:6 }}>Montant</p>
             <div style={{ display:"flex", alignItems:"baseline", gap:6 }}>
               <span style={{ fontSize:24, color:"var(--text-muted)", fontFamily:"'DM Serif Display',serif" }}>€</span>
               <input value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0,00" inputMode="decimal"
-                style={{ fontSize:34, fontFamily:"'DM Serif Display',serif", flex:1, color:type==="expense"?"var(--red)":"var(--green)" }} />
+                style={{ fontSize:34, fontFamily:"'DM Serif Display',serif", flex:1, color:amountColor }} />
             </div>
           </div>
 
           {/* ── Ajustement (édition uniquement, hors carte et hors report) ── */}
-          {isEditing && !transaction?.isCard && !transaction?._transferFrom && (
+          {isEditing && !transaction?.isCard && !transaction?._transferFrom && !isTransfer && (
             <div style={{ background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"12px 14px" }}>
               <p style={{ fontSize:11, color:"var(--text-sub)", fontWeight:600, letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:10 }}>Ajustement</p>
               <div style={S.flexRow8}>
-                {/* Boutons +/− */}
                 <div style={{ display:"flex", flexDirection:"column", gap:4, flexShrink:0 }}>
                   {["+","-"].map(s=>{
-                    const isExpense = type === "expense";
-                    const btnColor = s === "+" ? (isExpense ? "var(--red)" : "var(--green)") : (isExpense ? "var(--green)" : "var(--red)");
-                    const btnBg    = s === "+" ? (isExpense ? "rgba(224,92,92,0.18)" : "rgba(76,175,130,0.18)") : (isExpense ? "rgba(76,175,130,0.18)" : "rgba(224,92,92,0.18)");
+                    const isExpense = mode === "expense";
+                    const btnColor = s==="+" ? (isExpense?"var(--red)":"var(--green)") : (isExpense?"var(--green)":"var(--red)");
+                    const btnBg    = s==="+" ? (isExpense?"rgba(224,92,92,0.18)":"rgba(76,175,130,0.18)") : (isExpense?"rgba(76,175,130,0.18)":"rgba(224,92,92,0.18)");
                     return (
                       <button key={s} onClick={()=>setAdjSign(s)}
-                        style={{ width:32, height:32, borderRadius:8, fontSize:18, fontWeight:700, cursor:"pointer",
-                          background: adjSign===s ? btnBg : "var(--surface)",
-                          border: adjSign===s ? `1px solid ${btnColor}` : "1px solid var(--border)",
-                          color: adjSign===s ? btnColor : "var(--text-muted)",
-                          display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>
+                        style={{ width:32,height:32,borderRadius:8,fontSize:18,fontWeight:700,cursor:"pointer",
+                          background:adjSign===s?btnBg:"var(--surface)", border:adjSign===s?`1px solid ${btnColor}`:"1px solid var(--border)",
+                          color:adjSign===s?btnColor:"var(--text-muted)", display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1 }}>
                         {s}
                       </button>
                     );
                   })}
                 </div>
-                {/* Champ valeur */}
                 <input value={adjValue} onChange={e=>setAdjValue(e.target.value)} placeholder="0,00" inputMode="decimal"
                   style={{ flex:1, fontSize:22, fontFamily:"'DM Serif Display',serif",
-                    color: adjSign==="+" ? (type==="expense"?"var(--red)":"var(--green)") : (type==="expense"?"var(--green)":"var(--red)"),
-                    background:"var(--surface)", border:"1px solid var(--border)", borderRadius:8,
-                    padding:"6px 10px", minWidth:0 }} />
-                {/* Résultat + bouton appliquer */}
+                    color:adjSign==="+"?(mode==="expense"?"var(--red)":"var(--green)"):(mode==="expense"?"var(--green)":"var(--red)"),
+                    background:"var(--surface)", border:"1px solid var(--border)", borderRadius:8, padding:"6px 10px", minWidth:0 }} />
                 <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, flexShrink:0 }}>
                   {adjResultValid ? (
                     <span style={{ fontSize:11, whiteSpace:"nowrap", textAlign:"right", lineHeight:1.5 }}>
-                      <span style={{ color: adjFinalType==="expense"?"var(--red)":"var(--green)", fontWeight:700 }}>
-                        = {fmtEur(adjFinalAmt)}
-                      </span>
-                      {adjFlipsType && (
-                        <span style={{ display:"block", color:"var(--gold)", fontSize:10 }}>
-                          ⚡ bascule en {adjFinalType==="income"?"revenu":"dépense"}
-                        </span>
-                      )}
+                      <span style={{ color:adjFinalType==="expense"?"var(--red)":"var(--green)", fontWeight:700 }}>= {fmtEur(adjFinalAmt)}</span>
+                      {adjFlipsType && <span style={{ display:"block", color:"var(--gold)", fontSize:10 }}>⚡ bascule en {adjFinalType==="income"?"revenu":"dépense"}</span>}
                     </span>
-                  ) : (
-                    <span style={{ fontSize:11, color:"var(--text-muted)", whiteSpace:"nowrap" }}>= —</span>
-                  )}
+                  ) : <span style={{ fontSize:11, color:"var(--text-muted)", whiteSpace:"nowrap" }}>= —</span>}
                   <button onClick={applyAdj} disabled={!adjResultValid}
-                    style={{ padding:"5px 12px", borderRadius:8, fontSize:12, fontWeight:700, whiteSpace:"nowrap", cursor: adjResultValid?"pointer":"not-allowed",
-                      background: adjResultValid?"linear-gradient(135deg,var(--gold-light),var(--gold))":"var(--surface)",
-                      border: adjResultValid?"none":"1px solid var(--border)",
-                      color: adjResultValid?"#0e0f13":"var(--text-muted)", opacity: adjResultValid?1:0.5 }}>
+                    style={{ padding:"5px 12px",borderRadius:8,fontSize:12,fontWeight:700,whiteSpace:"nowrap",cursor:adjResultValid?"pointer":"not-allowed",
+                      background:adjResultValid?"linear-gradient(135deg,var(--gold-light),var(--gold))":"var(--surface)",
+                      border:adjResultValid?"none":"1px solid var(--border)",
+                      color:adjResultValid?"#0e0f13":"var(--text-muted)",opacity:adjResultValid?1:0.5 }}>
                     Appliquer
                   </button>
                 </div>
               </div>
             </div>
           )}
-          <Field label="Libellé"><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex : Courses, Salaire…" style={{ fontSize:15, width:"100%", padding:"0 2px" }} /></Field>
-          <div style={S.grid2col10}>
-            <Field label="Compte">
-              <select value={selAcctId} onChange={e=>setSelAcctId(e.target.value)} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
-                {store.accounts.filter(a=>a.type==="checking").map(a=><option key={a.id} value={a.id} style={{ background:"var(--select-bg)" }}>💳 {a.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Date"><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{ fontSize:14, width:"100%", colorScheme:"var(--colorscheme)" }} /></Field>
-          </div>
 
-          {/* Card toggle — only shown if account has a card */}
-          {acctHasCard && (
+          {/* ── Libellé ── */}
+          <Field label="Libellé"><input value={title} onChange={e=>setTitle(e.target.value)} placeholder={isTransfer ? "Ex : Épargne mensuelle, Remboursement…" : "Ex : Courses, Salaire…"} style={{ fontSize:15, width:"100%", padding:"0 2px" }} /></Field>
+
+          {/* ── Comptes + Date ── */}
+          {isTransfer ? (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 24px 1fr", alignItems:"end", gap:6 }}>
+                <Field label="Compte source">
+                  <select value={srcAcctId} onChange={e=>setSrcAcctId(e.target.value)} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
+                    {checkingAccounts.map(a=><option key={a.id} value={a.id} style={{ background:"var(--select-bg)" }}>💳 {a.name}</option>)}
+                  </select>
+                </Field>
+                <div style={{ display:"flex", justifyContent:"center", alignItems:"center", paddingBottom:6, color:"var(--text-muted)", fontSize:16 }}>→</div>
+                <Field label="Compte destination">
+                  <select value={dstAcctId} onChange={e=>setDstAcctId(e.target.value)} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
+                    {checkingAccounts.map(a=><option key={a.id} value={a.id} style={{ background:"var(--select-bg)" }}>💳 {a.name}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <Field label="Date"><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{ fontSize:14, width:"100%", colorScheme:"var(--colorscheme)" }} /></Field>
+            </div>
+          ) : (
+            <div style={S.grid2col10}>
+              <Field label="Compte">
+                <select value={selAcctId} onChange={e=>setSrcAcctId(e.target.value)} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
+                  {checkingAccounts.map(a=><option key={a.id} value={a.id} style={{ background:"var(--select-bg)" }}>💳 {a.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Date"><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{ fontSize:14, width:"100%", colorScheme:"var(--colorscheme)" }} /></Field>
+            </div>
+          )}
+
+          {/* ── Toggle carte (hors virement) ── */}
+          {acctHasCard && !isTransfer && (
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", background:asCard?"rgba(201,168,76,0.06)":"var(--surface2)", border:`1px solid ${asCard?"rgba(201,168,76,0.3)":"var(--border)"}`, borderRadius:"var(--radius-sm)", transition:"all 0.2s" }}>
               <div style={S.flexRow10}>
-                <span style={{ fontSize:18 }}>🃏</span>
+                <span style={{ fontSize:18 }}>💳</span>
                 <div>
                   <p style={{ fontSize:13, fontWeight:600, color:asCard?"var(--gold)":"var(--text)" }}>Imputer sur la carte</p>
                   <p style={{ fontSize:11, color:"var(--text-muted)" }}>{selAcct.cardName} · débit différé</p>
@@ -3554,7 +3635,62 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
             </div>
           )}
 
+          {/* ── Note ── */}
           <Field label="Note (optionnelle)"><textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="Commentaire…" rows={2} style={{ fontSize:14, width:"100%", resize:"none", lineHeight:1.5 }} /></Field>
+
+          {/* ── Bandeau soldes prévisionnels ── */}
+          {amountValid && srcForecast !== null && (
+            isTransfer ? (
+              /* Mode virement : deux colonnes côte à côte */
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                {[
+                  { label: store.accounts.find(a=>a.id===srcAcctId)?.name || "Source", current: srcBalance, forecast: srcForecast, delta: srcForecast - srcBalance },
+                  { label: store.accounts.find(a=>a.id===dstAcctId)?.name || "Destination", current: dstBalance, forecast: dstForecast, delta: dstForecast !== null ? dstForecast - dstBalance : null },
+                ].map(({ label, current, forecast, delta }) => (
+                  forecast !== null && (
+                    <div key={label} style={{
+                      padding:"10px 12px", borderRadius:"var(--radius-sm)",
+                      background: delta >= 0 ? "rgba(72,199,142,0.07)" : "rgba(224,92,92,0.07)",
+                      border: `1px solid ${delta >= 0 ? "rgba(72,199,142,0.25)" : "rgba(224,92,92,0.25)"}`,
+                    }}>
+                      <span style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>{label}</span>
+                      <span style={{ fontSize:18, fontWeight:700, fontFamily:"'DM Serif Display',serif", color: forecast >= 0 ? "var(--green)" : "var(--red)", display:"block", marginBottom:4 }}>{fmtEur(forecast)}</span>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                        <span style={{ fontSize:10, color:"var(--text-sub)" }}>{fmtEur(current)}</span>
+                        <span style={{ fontSize:11, fontWeight:700, padding:"1px 6px", borderRadius:5,
+                          background: delta > 0 ? "rgba(72,199,142,0.15)" : delta < 0 ? "rgba(224,92,92,0.15)" : "rgba(255,255,255,0.06)",
+                          color: delta > 0 ? "var(--green)" : delta < 0 ? "var(--red)" : "var(--text-muted)"
+                        }}>{delta > 0 ? "+" : ""}{fmtEur(delta)}</span>
+                      </div>
+                    </div>
+                  )
+                ))}
+              </div>
+            ) : (
+              /* Mode normal : un seul bandeau */
+              <div style={{
+                display:"flex", alignItems:"center", justifyContent:"space-between",
+                padding:"12px 16px", borderRadius:"var(--radius-sm)",
+                background: (srcForecast - srcBalance) >= 0 ? "rgba(72,199,142,0.07)" : "rgba(224,92,92,0.07)",
+                border: `1px solid ${(srcForecast - srcBalance) >= 0 ? "rgba(72,199,142,0.25)" : "rgba(224,92,92,0.25)"}`,
+                transition:"all 0.2s"
+              }}>
+                <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
+                  <span style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.07em" }}>Solde prévisionnel</span>
+                  <span style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color: srcForecast >= 0 ? "var(--green)" : "var(--red)", lineHeight:1.1 }}>{fmtEur(srcForecast)}</span>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+                  <span style={{ fontSize:11, color:"var(--text-sub)" }}>Actuel&nbsp;: <span style={{ color:"var(--text-muted)", fontWeight:600 }}>{fmtEur(srcBalance)}</span></span>
+                  <span style={{
+                    fontSize:13, fontWeight:700, padding:"2px 9px", borderRadius:6,
+                    background: (srcForecast-srcBalance) > 0 ? "rgba(72,199,142,0.15)" : (srcForecast-srcBalance) < 0 ? "rgba(224,92,92,0.15)" : "rgba(255,255,255,0.06)",
+                    color: (srcForecast-srcBalance) > 0 ? "var(--green)" : (srcForecast-srcBalance) < 0 ? "var(--red)" : "var(--text-muted)"
+                  }}>{(srcForecast-srcBalance) > 0 ? "+" : ""}{fmtEur(srcForecast-srcBalance)}</span>
+                </div>
+              </div>
+            )
+          )}
+
           {error && <p style={{ color:"var(--red)", fontSize:13 }}>{error}</p>}
           <button onClick={handleSubmit} style={{ padding:"14px", borderRadius:"var(--radius)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:16, fontWeight:700, boxShadow:"0 4px 20px rgba(201,168,76,0.35)", marginTop:4 }}>Enregistrer</button>
         </div>
