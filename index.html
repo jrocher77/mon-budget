@@ -3507,6 +3507,59 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
   // Couleur du montant selon le mode
   const amountColor = isTransfer ? "var(--text)" : mode === "expense" ? "var(--red)" : "var(--green)";
 
+  // ── Bandeau soldes prévisionnels (réutilisé à deux endroits selon le mode) ──
+  const forecastBand = amountValid && srcForecast !== null && (
+    isTransfer ? (
+      /* Mode virement : deux colonnes côte à côte */
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+        {[
+          { label: store.accounts.find(a=>a.id===srcAcctId)?.name || "Source", current: srcBalance, forecast: srcForecast, delta: srcForecast - srcBalance },
+          { label: store.accounts.find(a=>a.id===dstAcctId)?.name || "Destination", current: dstBalance, forecast: dstForecast, delta: dstForecast !== null ? dstForecast - dstBalance : null },
+        ].map(({ label, current, forecast, delta }) => (
+          forecast !== null && (
+            <div key={label} style={{
+              padding:"10px 12px", borderRadius:"var(--radius-sm)",
+              background: delta >= 0 ? "rgba(72,199,142,0.07)" : "rgba(224,92,92,0.07)",
+              border: `1px solid ${delta >= 0 ? "rgba(72,199,142,0.25)" : "rgba(224,92,92,0.25)"}`,
+            }}>
+              <span style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>{label}</span>
+              <span style={{ fontSize:18, fontWeight:700, fontFamily:"'DM Serif Display',serif", color: forecast >= 0 ? "var(--green)" : "var(--red)", display:"block", marginBottom:4 }}>{fmtEur(forecast)}</span>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span style={{ fontSize:10, color:"var(--text-sub)" }}>{fmtEur(current)}</span>
+                <span style={{ fontSize:11, fontWeight:700, padding:"1px 6px", borderRadius:5,
+                  background: delta > 0 ? "rgba(72,199,142,0.15)" : delta < 0 ? "rgba(224,92,92,0.15)" : "rgba(255,255,255,0.06)",
+                  color: delta > 0 ? "var(--green)" : delta < 0 ? "var(--red)" : "var(--text-muted)"
+                }}>{delta > 0 ? "+" : ""}{fmtEur(delta)}</span>
+              </div>
+            </div>
+          )
+        ))}
+      </div>
+    ) : (
+      /* Mode normal : un seul bandeau */
+      <div style={{
+        display:"flex", alignItems:"center", justifyContent:"space-between",
+        padding:"12px 16px", borderRadius:"var(--radius-sm)",
+        background: (srcForecast - srcBalance) >= 0 ? "rgba(72,199,142,0.07)" : "rgba(224,92,92,0.07)",
+        border: `1px solid ${(srcForecast - srcBalance) >= 0 ? "rgba(72,199,142,0.25)" : "rgba(224,92,92,0.25)"}`,
+        transition:"all 0.2s"
+      }}>
+        <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
+          <span style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.07em" }}>Solde prévisionnel</span>
+          <span style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color: srcForecast >= 0 ? "var(--green)" : "var(--red)", lineHeight:1.1 }}>{fmtEur(srcForecast)}</span>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+          <span style={{ fontSize:11, color:"var(--text-sub)" }}>Actuel&nbsp;: <span style={{ color:"var(--text-muted)", fontWeight:600 }}>{fmtEur(srcBalance)}</span></span>
+          <span style={{
+            fontSize:13, fontWeight:700, padding:"2px 9px", borderRadius:6,
+            background: (srcForecast-srcBalance) > 0 ? "rgba(72,199,142,0.15)" : (srcForecast-srcBalance) < 0 ? "rgba(224,92,92,0.15)" : "rgba(255,255,255,0.06)",
+            color: (srcForecast-srcBalance) > 0 ? "var(--green)" : (srcForecast-srcBalance) < 0 ? "var(--red)" : "var(--text-muted)"
+          }}>{(srcForecast-srcBalance) > 0 ? "+" : ""}{fmtEur(srcForecast-srcBalance)}</span>
+        </div>
+      </div>
+    )
+  );
+
   return (
     <div style={{ position:"fixed", inset:0, zIndex:200, background:"rgba(0,0,0,0.7)", backdropFilter:"blur(6px)", display:"flex", alignItems:"flex-end" }}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -3522,8 +3575,8 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
 
           {/* ── Sélecteur de mode ── */}
           {!isEditing && (
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:4 }}>
-              {[["expense","Dépense","var(--red)"],["income","Revenu","var(--green)"],["transfer","Virement","var(--gold)"]].map(([v,l,c])=>(
+            <div style={{ display:"grid", gridTemplateColumns:isCardTransaction?"1fr 1fr":"1fr 1fr 1fr", gap:6, background:"var(--surface2)", borderRadius:"var(--radius-sm)", padding:4 }}>
+              {[["expense","Dépense","var(--red)"],["income","Revenu","var(--green)"],...(isCardTransaction?[]:[["transfer","Virement","var(--gold)"]])].map(([v,l,c])=>(
                 <button key={v} onClick={()=>setMode(v)} style={{ padding:"9px", borderRadius:8, background:mode===v?c+"22":"transparent", border:`1px solid ${mode===v?c:"transparent"}`, color:mode===v?c:"var(--text-muted)", fontSize:13, fontWeight:600 }}>{l}</button>
               ))}
             </div>
@@ -3535,6 +3588,9 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
               ))}
             </div>
           )}
+
+          {/* ── Solde prévisionnel (au-dessus du montant) ── */}
+          {forecastBand}
 
           {/* ── Montant ── */}
           <div style={{ background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"14px 16px" }}>
@@ -3597,13 +3653,13 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
             <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 24px 1fr", alignItems:"end", gap:6 }}>
                 <Field label="Compte source">
-                  <select value={srcAcctId} onChange={e=>setSrcAcctId(e.target.value)} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
+                  <select value={srcAcctId} onChange={e=>{ const v=e.target.value; if(v===dstAcctId) setDstAcctId(srcAcctId); setSrcAcctId(v); }} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
                     {checkingAccounts.map(a=><option key={a.id} value={a.id} style={{ background:"var(--select-bg)" }}>💳 {a.name}</option>)}
                   </select>
                 </Field>
                 <div style={{ display:"flex", justifyContent:"center", alignItems:"center", paddingBottom:6, color:"var(--text-muted)", fontSize:16 }}>→</div>
                 <Field label="Compte destination">
-                  <select value={dstAcctId} onChange={e=>setDstAcctId(e.target.value)} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
+                  <select value={dstAcctId} onChange={e=>{ const v=e.target.value; if(v===srcAcctId) setSrcAcctId(dstAcctId); setDstAcctId(v); }} style={{ fontSize:14, width:"100%", background:"var(--select-bg)", color:"var(--text)" }}>
                     {checkingAccounts.map(a=><option key={a.id} value={a.id} style={{ background:"var(--select-bg)" }}>💳 {a.name}</option>)}
                   </select>
                 </Field>
@@ -3637,59 +3693,6 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
 
           {/* ── Note ── */}
           <Field label="Note (optionnelle)"><textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="Commentaire…" rows={2} style={{ fontSize:14, width:"100%", resize:"none", lineHeight:1.5 }} /></Field>
-
-          {/* ── Bandeau soldes prévisionnels ── */}
-          {amountValid && srcForecast !== null && (
-            isTransfer ? (
-              /* Mode virement : deux colonnes côte à côte */
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-                {[
-                  { label: store.accounts.find(a=>a.id===srcAcctId)?.name || "Source", current: srcBalance, forecast: srcForecast, delta: srcForecast - srcBalance },
-                  { label: store.accounts.find(a=>a.id===dstAcctId)?.name || "Destination", current: dstBalance, forecast: dstForecast, delta: dstForecast !== null ? dstForecast - dstBalance : null },
-                ].map(({ label, current, forecast, delta }) => (
-                  forecast !== null && (
-                    <div key={label} style={{
-                      padding:"10px 12px", borderRadius:"var(--radius-sm)",
-                      background: delta >= 0 ? "rgba(72,199,142,0.07)" : "rgba(224,92,92,0.07)",
-                      border: `1px solid ${delta >= 0 ? "rgba(72,199,142,0.25)" : "rgba(224,92,92,0.25)"}`,
-                    }}>
-                      <span style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", display:"block", marginBottom:4 }}>{label}</span>
-                      <span style={{ fontSize:18, fontWeight:700, fontFamily:"'DM Serif Display',serif", color: forecast >= 0 ? "var(--green)" : "var(--red)", display:"block", marginBottom:4 }}>{fmtEur(forecast)}</span>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                        <span style={{ fontSize:10, color:"var(--text-sub)" }}>{fmtEur(current)}</span>
-                        <span style={{ fontSize:11, fontWeight:700, padding:"1px 6px", borderRadius:5,
-                          background: delta > 0 ? "rgba(72,199,142,0.15)" : delta < 0 ? "rgba(224,92,92,0.15)" : "rgba(255,255,255,0.06)",
-                          color: delta > 0 ? "var(--green)" : delta < 0 ? "var(--red)" : "var(--text-muted)"
-                        }}>{delta > 0 ? "+" : ""}{fmtEur(delta)}</span>
-                      </div>
-                    </div>
-                  )
-                ))}
-              </div>
-            ) : (
-              /* Mode normal : un seul bandeau */
-              <div style={{
-                display:"flex", alignItems:"center", justifyContent:"space-between",
-                padding:"12px 16px", borderRadius:"var(--radius-sm)",
-                background: (srcForecast - srcBalance) >= 0 ? "rgba(72,199,142,0.07)" : "rgba(224,92,92,0.07)",
-                border: `1px solid ${(srcForecast - srcBalance) >= 0 ? "rgba(72,199,142,0.25)" : "rgba(224,92,92,0.25)"}`,
-                transition:"all 0.2s"
-              }}>
-                <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                  <span style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.07em" }}>Solde prévisionnel</span>
-                  <span style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color: srcForecast >= 0 ? "var(--green)" : "var(--red)", lineHeight:1.1 }}>{fmtEur(srcForecast)}</span>
-                </div>
-                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
-                  <span style={{ fontSize:11, color:"var(--text-sub)" }}>Actuel&nbsp;: <span style={{ color:"var(--text-muted)", fontWeight:600 }}>{fmtEur(srcBalance)}</span></span>
-                  <span style={{
-                    fontSize:13, fontWeight:700, padding:"2px 9px", borderRadius:6,
-                    background: (srcForecast-srcBalance) > 0 ? "rgba(72,199,142,0.15)" : (srcForecast-srcBalance) < 0 ? "rgba(224,92,92,0.15)" : "rgba(255,255,255,0.06)",
-                    color: (srcForecast-srcBalance) > 0 ? "var(--green)" : (srcForecast-srcBalance) < 0 ? "var(--red)" : "var(--text-muted)"
-                  }}>{(srcForecast-srcBalance) > 0 ? "+" : ""}{fmtEur(srcForecast-srcBalance)}</span>
-                </div>
-              </div>
-            )
-          )}
 
           {error && <p style={{ color:"var(--red)", fontSize:13 }}>{error}</p>}
           <button onClick={handleSubmit} style={{ padding:"14px", borderRadius:"var(--radius)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:16, fontWeight:700, boxShadow:"0 4px 20px rgba(201,168,76,0.35)", marginTop:4 }}>Enregistrer</button>
