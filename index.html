@@ -629,14 +629,14 @@ function useStore(uid, email) {
     const prevKey    = prevMonthKey(currentKey);
     const reasons    = [];
 
-    // 1. Unpointed transactions that would be deleted
+    // 1. Unpointed transactions that would be deleted (including card transactions)
     const unpointedToDelete = txList.filter(t => {
       if (mKey(t.date) >= currentKey) return false;
       if (t.isCard && t.accountId) {
         const debitDate = cdd[t.accountId]?.[mKey(t.date)];
         if (debitDate && mKey(debitDate) >= currentKey) return false;
       }
-      return !t.pointed && !t._transferFrom; // exclude carry-over transactions
+      return !t.pointed && !t._transferFrom;
     });
     if (unpointedToDelete.length > 0) {
       reasons.push(`${unpointedToDelete.length} transaction(s) non pointée(s) seraient supprimées.`);
@@ -2265,31 +2265,31 @@ function Dashboard({ store, onAdd, onGoSavings }) {
 
   const months = useMemo(() => {
     const today = new Date();
-    const Y = today.getFullYear(), M = today.getMonth(), D = today.getDate();
+    const Y = today.getFullYear(), M = today.getMonth();
     const fmt = (y,m) => `${y}-${String(m+1).padStart(2,'0')}`;
     const result = [];
-    if (!store.autoCleanup || D < store.cleanupDay) {
-      const pm = M===0?11:M-1, py = M===0?Y-1:Y;
-      const pk = fmt(py,pm);
-      const cdd = store.cardDebitDates;
-      const currentKey = fmt(Y,M);
-      const hasNonDeferredTx = store.transactions.some(t => {
-        if (mKey(t.date) !== pk) return false;
-        if (t.isCard && t.accountId) {
-          const debitDate = cdd[t.accountId]?.[mKey(t.date)];
-          if (debitDate && mKey(debitDate) >= currentKey) return false;
-        }
-        return true;
-      });
-      if (hasNonDeferredTx) result.push(pk);
-    }
+    // Always show the previous month if it still has non-deferred transactions —
+    // regardless of autoCleanup/cleanupDay, because cleanup may have been blocked.
+    const pm = M===0?11:M-1, py = M===0?Y-1:Y;
+    const pk = fmt(py,pm);
+    const cdd = store.cardDebitDates;
+    const currentKey = fmt(Y,M);
+    const hasNonDeferredTx = store.transactions.some(t => {
+      if (mKey(t.date) !== pk) return false;
+      if (t.isCard && t.accountId) {
+        const debitDate = cdd[t.accountId]?.[mKey(t.date)];
+        if (debitDate && mKey(debitDate) >= currentKey) return false;
+      }
+      return true;
+    });
+    if (hasNonDeferredTx) result.push(pk);
     result.push(fmt(Y,M));
     const m1=M===11?0:M+1, y1=M===11?Y+1:Y;
     result.push(fmt(y1,m1));
     const m2=m1===11?0:m1+1, y2=m1===11?y1+1:y1;
     result.push(fmt(y2,m2));
     return result;
-  }, [store.cleanupDay, store.autoCleanup, store.transactions, store.cardDebitDates]);
+  }, [store.transactions, store.cardDebitDates]);
 
   // Helper: get next month key
   const nextMonthKey = (mk) => {
@@ -2391,7 +2391,6 @@ function Dashboard({ store, onAdd, onGoSavings }) {
     return store.transactions.filter(t =>
       t.accountId === selectedAccountId &&
       mKey(t.date) === sel &&
-      !t.isCard &&
       !t._transferFrom &&
       !t.pointed
     );
