@@ -407,6 +407,21 @@ const ThemeCtx  = createContext({ theme:"dark", toggle:()=>{} });
 const useTheme  = () => useContext(ThemeCtx);
 
 // ─── useStore ──────────────────────────────────────────────────────────────
+// Helper: get previous month key — defined here so it's accessible inside useStore
+function prevMonthKey(mk) {
+  const [y, m] = mk.split("-").map(Number);
+  const pm = m === 1 ? 12 : m - 1;
+  const py = m === 1 ? y - 1 : y;
+  return `${py}-${String(pm).padStart(2,'0')}`;
+}
+
+// Helper: compute allotment amount from allotment config — defined here so it's accessible inside useStore
+function allotmentAmount(allotment) {
+  if (!allotment) return 0;
+  if (allotment.mode === "units") return (allotment.count || 0) * (allotment.unitValue || 0);
+  return allotment.amount || 0;
+}
+
 function useStore(uid, email) {
   const isDemo = email === DEMO_EMAIL;
   const [ready,        setReady]       = useState(false);
@@ -605,6 +620,53 @@ function useStore(uid, email) {
   }, [uid, ready]);
 
   // ── Auto-cleanup ────────────────────────────────────────────────────────
+  // ── Cleanup safety checks ──────────────────────────────────────────────
+  // Returns an array of blocking reason strings (empty = safe to proceed).
+  // Checks: (1) transactions to delete that are not pointed,
+  //         (2) checking accounts whose month balance has not been carried over.
+  const cleanupBlockers = useCallback((txList, acctList, cdd) => {
+    const currentKey = nowMKey();
+    const prevKey    = prevMonthKey(currentKey);
+    const reasons    = [];
+
+    // 1. Unpointed transactions that would be deleted
+    const unpointedToDelete = txList.filter(t => {
+      if (mKey(t.date) >= currentKey) return false;
+      if (t.isCard && t.accountId) {
+        const debitDate = cdd[t.accountId]?.[mKey(t.date)];
+        if (debitDate && mKey(debitDate) >= currentKey) return false;
+      }
+      return !t.pointed && !t._transferFrom; // exclude carry-over transactions
+    });
+    if (unpointedToDelete.length > 0) {
+      reasons.push(`${unpointedToDelete.length} transaction(s) non pointée(s) seraient supprimées.`);
+    }
+
+    // 2. Checking accounts with past transactions but no carry-over
+    const checkingAccts = acctList.filter(a => a.type === "checking");
+    const missingCarry = checkingAccts.filter(acc => {
+      // Does the previous month have any non-deferred transactions for this account?
+      const hasPastTx = txList.some(t =>
+        t.accountId === acc.id &&
+        mKey(t.date) < currentKey &&
+        !(t.isCard && cdd[acc.id]?.[mKey(t.date)] && mKey(cdd[acc.id][mKey(t.date)]) >= currentKey)
+      );
+      if (!hasPastTx) return false;
+      // Is there already a carry-over transaction for the previous month?
+      const hasCarry = txList.some(t =>
+        t.accountId === acc.id &&
+        t._transferFrom === prevKey
+      );
+      return !hasCarry;
+    });
+    if (missingCarry.length > 0) {
+      const names = missingCarry.map(a => a.name).join(", ");
+      reasons.push(`Le solde du mois précédent n'a pas été reporté pour : ${names}.`);
+    }
+
+    return reasons;
+  }, []);
+
   const doCleanup = useCallback((cdd, bd) => {
     const currentKey = nowMKey();
     // Cleanup regular transactions (unchanged)
@@ -619,19 +681,48 @@ function useStore(uid, email) {
       });
       return filtered.length !== prev.length ? filtered : prev;
     });
-    // Cleanup benefitData: remove expenses and allotments strictly before current month
+    // Cleanup benefitData: preserve carry-over balance, then remove data strictly before current month.
+    // Before purging past months, we compute the accumulated carry-over (allotments − expenses for all
+    // months prior to the current one) and inject it as a synthetic allotment on the previous month so
+    // that computeCarryOver() can still reconstruct the correct available balance after cleanup.
     if (bd && Object.keys(bd).length > 0) {
       setBenefitData(prev => {
         let changed = false;
         const next = {};
+        const prevKey = prevMonthKey(currentKey);
         Object.entries(prev).forEach(([accountId, acct]) => {
-          const expenses  = (acct.expenses  || []).filter(e => mKey(e.date) >= currentKey);
+          // 1. Compute carry-over from all months strictly before currentKey
+          const allMonths = new Set([
+            ...Object.keys(acct.allotments || {}),
+            ...(acct.expenses || []).map(e => mKey(e.date)),
+          ]);
+          const pastMonths = [...allMonths].filter(mk => mk < currentKey).sort();
+          let carry = 0;
+          for (const mk of pastMonths) {
+            const allotted = allotmentAmount(acct.allotments?.[mk]);
+            const spent    = (acct.expenses || []).filter(e => mKey(e.date) === mk).reduce((s, e) => s + e.amount, 0);
+            carry = Math.max(0, carry + allotted - spent);
+          }
+
+          // 2. Keep only current-month-and-future data
+          const expenses = (acct.expenses || []).filter(e => mKey(e.date) >= currentKey);
           const allotments = Object.fromEntries(
             Object.entries(acct.allotments || {}).filter(([mk]) => mk >= currentKey)
           );
-          const expChanged = expenses.length  !== (acct.expenses  || []).length;
+
+          // 3. If there is a positive carry-over to preserve, inject it as a synthetic dotation
+          //    on the previous month (flagged _isCarryOver so the UI can identify it if needed).
+          //    This allows computeCarryOver() to return the correct amount for the current month.
+          if (carry > 0) {
+            allotments[prevKey] = { mode: "amount", amount: carry, _isCarryOver: true };
+          }
+
+          const expChanged = expenses.length !== (acct.expenses || []).length;
           const allChanged = Object.keys(allotments).length !== Object.keys(acct.allotments || {}).length;
-          if (expChanged || allChanged) changed = true;
+          // Also changed if we added or updated the carry-over entry
+          const prevEntry = acct.allotments?.[prevKey];
+          const carryChanged = carry > 0 && (!prevEntry || prevEntry.amount !== carry || !prevEntry._isCarryOver);
+          if (expChanged || allChanged || carryChanged) changed = true;
           next[accountId] = { allotments, expenses };
         });
         return changed ? next : prev;
@@ -639,16 +730,25 @@ function useStore(uid, email) {
     }
   }, []);
 
+  // Toast state for blocked auto-cleanup — consumed by App component
+  const [autoCleanupBlockedReasons, setAutoCleanupBlockedReasons] = useState(null);
+
   useEffect(() => {
     // SAFETY: do not run cleanup before Firestore has confirmed real data
     if (!ready || !autoCleanup || !trustedRef.current) return;
     const today = new Date();
     const currentDay = today.getDate();
     if (currentDay >= cleanupDay) {
-      dbg(`🧹 Nettoyage auto déclenché (jour ${currentDay} >= ${cleanupDay})`);
-      doCleanup(cardDebitDates, benefitData);
+      const blockers = cleanupBlockers(transactions, accounts, cardDebitDates);
+      if (blockers.length > 0) {
+        dbg(`🚫 Nettoyage auto bloqué — ${blockers.length} raison(s)`);
+        setAutoCleanupBlockedReasons(blockers);
+      } else {
+        dbg(`🧹 Nettoyage auto déclenché (jour ${currentDay} >= ${cleanupDay})`);
+        doCleanup(cardDebitDates, benefitData);
+      }
     }
-  }, [ready, autoCleanup, cleanupDay, cardDebitDates, benefitData, doCleanup]);
+  }, [ready, autoCleanup, cleanupDay, cardDebitDates, benefitData, doCleanup, cleanupBlockers, transactions, accounts]);
 
   // ── Persist on every state change ───────────────────────────────────────
   useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData); },
@@ -732,6 +832,7 @@ function useStore(uid, email) {
   const updateCleanupDay  = day  => setCleanupDay(day);
   const updateAutoCleanup = val  => setAutoCleanup(val);
   const cleanupMonth  = () => doCleanup(cardDebitDates, benefitData);
+  const checkCleanupBlockers = () => cleanupBlockers(transactions, accounts, cardDebitDates);
 
   // ── Card debit dates actions ─────────────────────────────────────────────
   // cardDebitDates: { [accountId]: { [monthKey]: "YYYY-MM-DD" } }
@@ -936,7 +1037,8 @@ function useStore(uid, email) {
   return { ready, transactions, add, remove, update, togglePointed,
     templates, addTplItem, removeTplItem, updateTplItem, applyTemplate,
     accounts, addAccount, removeAccount, updateAccount, moveAccount,
-    cleanupDay, updateCleanupDay, autoCleanup, updateAutoCleanup, cleanupMonth,
+    cleanupDay, updateCleanupDay, autoCleanup, updateAutoCleanup, cleanupMonth, checkCleanupBlockers,
+    autoCleanupBlockedReasons, clearAutoCleanupBlockedReasons: () => setAutoCleanupBlockedReasons(null),
     savingsHistory, addSavingsSnapshot, updateSavingsSnapshot, removeSavingsSnapshot,
     savingsSnapDays, setSavingsSnapDays, savingsSnapActive, setSavingsSnapActive,
     cardDebitDates, setCardDebitDate, clearCardDebitDate,
@@ -1186,6 +1288,39 @@ function SlowConnectionScreen({ onRetry }) {
   );
 }
 
+// ─── CleanupBlockedToast ────────────────────────────────────────────────────
+function CleanupBlockedToast({ reasons, onClose }) {
+  // Auto-dismiss after 12 seconds
+  useEffect(() => {
+    const t = setTimeout(onClose, 12000);
+    return () => clearTimeout(t);
+  }, [onClose]);
+  return (
+    <div style={{
+      position:"fixed", bottom:90, left:12, right:12, zIndex:9997,
+      background:"var(--surface)", border:"1px solid var(--gold)",
+      borderRadius:"var(--radius-sm)", padding:"14px 16px",
+      boxShadow:"0 4px 24px rgba(0,0,0,0.4)", animation:"fadeUp 0.3s ease both"
+    }}>
+      <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
+        <span style={{ fontSize:18, flexShrink:0, marginTop:1 }}>⚠️</span>
+        <div style={{ flex:1 }}>
+          <p style={{ fontSize:13, fontWeight:700, color:"var(--gold)", marginBottom:6 }}>Nettoyage automatique bloqué</p>
+          <ul style={{ margin:0, padding:0, listStyle:"none" }}>
+            {reasons.map((r, i) => (
+              <li key={i} style={{ fontSize:12, color:"var(--text-muted)", lineHeight:1.5, marginBottom:2 }}>• {r}</li>
+            ))}
+          </ul>
+          <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:6, lineHeight:1.4 }}>
+            Corrigez ces points puis relancez le nettoyage manuellement depuis les Paramètres.
+          </p>
+        </div>
+        <button onClick={onClose} style={{ background:"none", border:"none", color:"var(--text-sub)", fontSize:16, cursor:"pointer", padding:2, flexShrink:0 }}>✕</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── App ───────────────────────────────────────────────────────────────────
 function App() {
   const [user,       setUser]    = useState(undefined); // undefined = checking, null = not logged in
@@ -1196,6 +1331,20 @@ function App() {
   const [theme,      setTheme]   = useState(() => { try { return localStorage.getItem("budget_theme") || "dark"; } catch { return "dark"; } });
 
   const store = useStore(user?.uid, user?.email);
+
+  // Toast for auto-cleanup blocked — shown once per day via localStorage
+  const CLEANUP_TOAST_KEY = "budget_cleanup_blocked_shown";
+  const [showCleanupBlockedToast, setShowCleanupBlockedToast] = useState(false);
+  useEffect(() => {
+    if (!store.autoCleanupBlockedReasons) return;
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    let lastShown = "";
+    try { lastShown = localStorage.getItem(CLEANUP_TOAST_KEY) || ""; } catch { /* ignore */ }
+    if (lastShown !== today) {
+      setShowCleanupBlockedToast(true);
+      try { localStorage.setItem(CLEANUP_TOAST_KEY, today); } catch { /* ignore */ }
+    }
+  }, [store.autoCleanupBlockedReasons]);
 
   const INACTIVITY_LIMIT = (user?.email === DEMO_EMAIL ? 15 * 60 : 8 * 60 * 60) * 1000; // 15min demo, 8h normal
   const ACTIVITY_KEY     = "budget_last_activity";
@@ -1301,6 +1450,12 @@ function App() {
           </div>
         )}
         {_isDebugEnabled() && <DebugOverlay />}
+        {showCleanupBlockedToast && store.autoCleanupBlockedReasons && (
+          <CleanupBlockedToast
+            reasons={store.autoCleanupBlockedReasons}
+            onClose={() => { setShowCleanupBlockedToast(false); store.clearAutoCleanupBlockedReasons(); }}
+          />
+        )}
         {store.saveError && (
           <div style={{ position:"fixed", bottom:90, left:12, right:12, zIndex:9998, display:"flex", alignItems:"center", gap:10, padding:"12px 16px", borderRadius:"var(--radius-sm)", background:"var(--red)", boxShadow:"0 4px 20px rgba(0,0,0,0.35)", animation:"fadeUp 0.3s ease both" }}>
             <span style={{ fontSize:18 }}>&#x26A0;&#xFE0F;</span>
@@ -1614,20 +1769,6 @@ function CardPanel({ account, sel, cardTxM, cardTotal, cardDebitDate, isDebitNex
 }
 
 // ─── BenefitModal ──────────────────────────────────────────────────────────
-// Helper: compute allotment amount from allotment config
-function allotmentAmount(allotment) {
-  if (!allotment) return 0;
-  if (allotment.mode === "units") return (allotment.count || 0) * (allotment.unitValue || 0);
-  return allotment.amount || 0;
-}
-
-// Helper: get previous month key
-function prevMonthKey(mk) {
-  const [y, m] = mk.split("-").map(Number);
-  const pm = m === 1 ? 12 : m - 1;
-  const py = m === 1 ? y - 1 : y;
-  return `${py}-${String(pm).padStart(2,'0')}`;
-}
 
 // Compute carry-over balance for a given month: sum up from all previous months
 // carryover = allotment(prev months) - expenses(prev months), propagated
@@ -2657,6 +2798,16 @@ function Settings({ store, user }) {
   const handleCleanupClick = () => {
     const currentKey = nowMKey();
     const cdd = store.cardDebitDates;
+
+    // Safety check first
+    const blockers = store.checkCleanupBlockers();
+    if (blockers.length > 0) {
+      const blockMsg = `Le nettoyage ne peut pas être effectué :\n\n• ${blockers.join("\n• ")}\n\nCorrigez ces points avant de relancer le nettoyage.`;
+      setCleanupMessage({ text: blockMsg, canDelete: false, isBlocked: true });
+      setShowCleanupConfirm(true);
+      return;
+    }
+
     const toDelete = store.transactions.filter(t => {
       if (mKey(t.date) >= currentKey) return false;
       if (t.isCard && t.accountId) {
@@ -2697,7 +2848,7 @@ function Settings({ store, user }) {
       if (benefitToDelete > 0) parts.push(`${benefitToDelete} entrée(s) Avantages`);
       msg = `Supprimer ${parts.join(" et ")} antérieure(s) à ${currentName} ?`;
     }
-    setCleanupMessage({ text: msg, canDelete: totalToDelete > 0 });
+    setCleanupMessage({ text: msg, canDelete: totalToDelete > 0, isBlocked: false });
     setShowCleanupConfirm(true);
   };
 
@@ -3019,10 +3170,22 @@ function Settings({ store, user }) {
         <div style={S.overlay}
           onClick={e=>e.target===e.currentTarget&&setShowCleanupConfirm(false)}>
           <div className="scale-in" style={{ width:"100%", maxWidth:400, background:"var(--surface)", borderRadius:"var(--radius)", border:"1px solid var(--border)", padding:24 }}>
-            <p style={S.modalTitle}>Confirmation</p>
-            <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>{cleanupMessage.text}</p>
+            <p style={S.modalTitle}>{cleanupMessage.isBlocked ? "⚠️ Nettoyage bloqué" : "Confirmation"}</p>
+            {cleanupMessage.isBlocked ? (
+              <div style={{ marginBottom:20 }}>
+                {cleanupMessage.text.split("\n").filter(l=>l.trim()).map((line, i) => (
+                  <p key={i} style={{ fontSize:13, color: line.startsWith("•") ? "var(--red)" : "var(--text-muted)", lineHeight:1.6, marginBottom: line.startsWith("•") ? 4 : 8, paddingLeft: line.startsWith("•") ? 4 : 0, fontWeight: line.startsWith("•") ? 600 : 400 }}>
+                    {line}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20, lineHeight:1.6 }}>{cleanupMessage.text}</p>
+            )}
             <div style={S.gap10}>
-              <button onClick={()=>setShowCleanupConfirm(false)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>Annuler</button>
+              <button onClick={()=>setShowCleanupConfirm(false)} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text)", fontSize:14, fontWeight:600 }}>
+                {cleanupMessage.isBlocked ? "Fermer" : "Annuler"}
+              </button>
               {cleanupMessage.canDelete && <button onClick={confirmCleanup} style={{ flex:1, padding:"10px", borderRadius:"var(--radius-sm)", background:"var(--red)", border:"none", color:"#fff", fontSize:14, fontWeight:600 }}>Supprimer</button>}
             </div>
           </div>
