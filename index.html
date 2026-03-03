@@ -1566,9 +1566,7 @@ function BoursePage({ user }) {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [showForm, setShowForm]   = useState(false);
   const [editPos, setEditPos]     = useState(null);
-  const [searchQ, setSearchQ]     = useState("");
-  const [searchRes, setSearchRes] = useState([]);
-  const [searchLoading, setSearchLoading] = useState(false);
+
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const searchDebounce = useRef(null);
 
@@ -1650,21 +1648,6 @@ function BoursePage({ user }) {
 
   useEffect(() => { fetchEurusd(); }, []);
 
-  // ── Recherche de symbole via Yahoo Finance ────────────────────────────────
-  useEffect(() => {
-    clearTimeout(searchDebounce.current);
-    if (!searchQ.trim() || searchQ.length < 2) { setSearchRes([]); return; }
-    setSearchLoading(true);
-    searchDebounce.current = setTimeout(async () => {
-      try {
-        const r = await fetch(`https://corsproxy.io/?https://autoc.finance.yahoo.com/autoc?query=${encodeURIComponent(searchQ)}&region=1&lang=fr-FR`);
-        const d = await r.json();
-        setSearchRes((d?.ResultSet?.Result || []).slice(0, 8));
-      } catch { setSearchRes([]); }
-      setSearchLoading(false);
-    }, 500);
-  }, [searchQ]);
-
 
   // ── Calculs portefeuille ───────────────────────────────────────────────────
   const rows = positions.map(p => {
@@ -1697,25 +1680,6 @@ function BoursePage({ user }) {
     const [quantite,  setQuantite]  = useState(initial?.quantite  || "");
     const [prixAchat, setPrixAchat] = useState(initial?.prixAchat || "");
     const [devise,    setDevise]    = useState(initial?.devise     || "USD");
-    const [localQ,    setLocalQ]    = useState("");
-    const [localRes,  setLocalRes]  = useState([]);
-    const [localLoad, setLocalLoad] = useState(false);
-    const dbRef = useRef(null);
-
-    useEffect(() => {
-      clearTimeout(dbRef.current);
-      if (!localQ.trim() || localQ.length < 2) { setLocalRes([]); return; }
-      setLocalLoad(true);
-      dbRef.current = setTimeout(async () => {
-        try {
-          const r = await fetch(`https://corsproxy.io/?https://autoc.finance.yahoo.com/autoc?query=${encodeURIComponent(localQ)}&region=1&lang=fr-FR`);
-          const d = await r.json();
-          setLocalRes((d?.ResultSet?.Result || []).slice(0, 6));
-        } catch {}
-        setLocalLoad(false);
-      }, 400);
-    }, [localQ]);
-
     const handleSubmit = () => {
       if (!symbol || !quantite || !prixAchat) return;
       onSave({ id: initial?.id || genId(), symbol: symbol.toUpperCase(), nom: nom || symbol.toUpperCase(), quantite: parseFloat(quantite), prixAchat: parseFloat(prixAchat), devise });
@@ -1728,23 +1692,16 @@ function BoursePage({ user }) {
         <div onClick={e=>e.stopPropagation()} style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:420, display:"flex", flexDirection:"column", gap:14 }}>
           <p style={S.modalTitle}>{initial ? "Modifier la position" : "Ajouter une action"}</p>
 
-          {/* Recherche symbole */}
+          {/* Aide symboles */}
           {!initial && (
-            <div style={{ position:"relative" }}>
-              <input style={inputStyle} placeholder="Rechercher une action (ex: Apple, LVMH…)" value={localQ} onChange={e=>setLocalQ(e.target.value)} />
-              {localLoad && <span style={{ position:"absolute", right:10, top:10, fontSize:12, color:"var(--text-muted)" }}>…</span>}
-              {localRes.length > 0 && (
-                <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:10, zIndex:10, maxHeight:200, overflowY:"auto", marginTop:4 }}>
-                  {localRes.map(r => (
-                    <div key={r.Symbol} onClick={()=>{ setSymbol(r.Symbol); setNom(r.Name || r.Symbol); setLocalQ(""); setLocalRes([]); }}
-                      style={{ padding:"10px 14px", cursor:"pointer", borderBottom:"1px solid var(--border)", fontSize:13 }}>
-                      <span style={{ fontWeight:600, color:"var(--gold)" }}>{r.Symbol}</span>
-                      <span style={{ color:"var(--text-muted)", marginLeft:8 }}>{r.Name}</span>
-                      {r.Exch && <span style={{ color:"var(--text-sub)", marginLeft:6, fontSize:11 }}>· {r.Exch}</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
+            <div style={{ background:"var(--surface2)", borderRadius:10, padding:"10px 12px", fontSize:12, color:"var(--text-muted)", lineHeight:1.6 }}>
+              💡 Saisis le symbole directement :<br/>
+              <span style={{ color:"var(--gold)" }}>AI.PA</span> Air Liquide &nbsp;·&nbsp;
+              <span style={{ color:"var(--gold)" }}>MC.PA</span> LVMH &nbsp;·&nbsp;
+              <span style={{ color:"var(--gold)" }}>TTE.PA</span> TotalEnergies<br/>
+              <span style={{ color:"var(--gold)" }}>AAPL</span> Apple &nbsp;·&nbsp;
+              <span style={{ color:"var(--gold)" }}>TSLA</span> Tesla &nbsp;·&nbsp;
+              <span style={{ color:"var(--gold)" }}>SAP.DE</span> SAP
             </div>
           )}
 
