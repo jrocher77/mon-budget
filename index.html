@@ -177,7 +177,8 @@ const COMPACT_STICKY_HEADER = true;
 
 const DEFAULT_CLEANUP_DAY  = 10;
 const DEFAULT_AUTO_CLEANUP = true;
-const DEFAULT_SAVINGS_HISTORY = [];
+const DEFAULT_SAVINGS_HISTORY  = [];
+const DEFAULT_CHECKING_HISTORY = []; // { id, date, monthKey, accountId, accountName, income, expense, balance, total, pointed, auto }
 const DEFAULT_SAVINGS_SNAP_DAYS   = [1, 15];
 const DEFAULT_SAVINGS_SNAP_ACTIVE = true;
 const DEFAULT_CARD_DEBIT_DATES = {}; // { [accountId]: { [monthKey]: dateString } }
@@ -433,6 +434,7 @@ function useStore(uid, email) {
   const [cleanupDay,   setCleanupDay]   = useState(DEFAULT_CLEANUP_DAY);
   const [autoCleanup,  setAutoCleanup]  = useState(DEFAULT_AUTO_CLEANUP);
   const [savingsHistory,    setSavingsHistory]    = useState(DEFAULT_SAVINGS_HISTORY);
+  const [checkingHistory,   setCheckingHistory]   = useState(DEFAULT_CHECKING_HISTORY);
   const [savingsSnapDays,   setSavingsSnapDays]   = useState(DEFAULT_SAVINGS_SNAP_DAYS);
   const [savingsSnapActive, setSavingsSnapActive] = useState(DEFAULT_SAVINGS_SNAP_ACTIVE);
   const [cardDebitDates,    setCardDebitDates]    = useState(DEFAULT_CARD_DEBIT_DATES);
@@ -524,6 +526,7 @@ function useStore(uid, email) {
         setCleanupDay(data.cleanupDay || DEFAULT_CLEANUP_DAY);
         setAutoCleanup(data.autoCleanup !== undefined ? data.autoCleanup : DEFAULT_AUTO_CLEANUP);
         setSavingsHistory(data.savingsHistory || DEFAULT_SAVINGS_HISTORY);
+        setCheckingHistory(data.checkingHistory || DEFAULT_CHECKING_HISTORY);
         setSavingsSnapDays(data.savingsSnapDays || DEFAULT_SAVINGS_SNAP_DAYS);
         setSavingsSnapActive(data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE);
         setCardDebitDates(data.cardDebitDates || DEFAULT_CARD_DEBIT_DATES);
@@ -561,7 +564,7 @@ function useStore(uid, email) {
           setBenefitData(initBd);
           trustedRef.current = true; // New account — we just wrote the initial data, persist is allowed
           if (!loadedRef.current) { loadedRef.current = true; dbg(`✅ ready=true (nouveau compte)`); setReady(true); }
-          fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX, benefitData:initBd });
+          fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, checkingHistory:DEFAULT_CHECKING_HISTORY, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX, benefitData:initBd });
         }, 3000);
 
         // Don't set ready yet — we're waiting for real data or the grace timer
@@ -593,7 +596,7 @@ function useStore(uid, email) {
   }, [uid, retryCount]);
 
   // ── Auto-save to Firestore (debounced 1s) ───────────────────────────────
-  const persist = useCallback((tx, tpl, acct, cd, ac, sh, ssd, ssa, cdd, sft, bd) => {
+  const persist = useCallback((tx, tpl, acct, cd, ac, sh, ch, ssd, ssa, cdd, sft, bd) => {
     // SAFETY: never write to Firestore before we've confirmed real data from the server.
     // This prevents wiping data on iOS PWA reload when Firestore cache is empty.
     if (!uid || !ready || !trustedRef.current) {
@@ -611,7 +614,7 @@ function useStore(uid, email) {
         return clean;
       });
       dbg(`💾 Sauvegarde Firestore — ${cleanTx.length} tx, ${acct?.length} comptes`);
-      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft, benefitData: bd })
+      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, savingsHistory: sh, checkingHistory: ch, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft, benefitData: bd })
         .then(() => { setSaveError(false); })
         .catch(() => {
           setSaveError(true);
@@ -735,26 +738,9 @@ function useStore(uid, email) {
   // Toast state for blocked auto-cleanup — consumed by App component
   const [autoCleanupBlockedReasons, setAutoCleanupBlockedReasons] = useState(null);
 
-  useEffect(() => {
-    // SAFETY: do not run cleanup before Firestore has confirmed real data
-    if (!ready || !autoCleanup || !trustedRef.current) return;
-    const today = new Date();
-    const currentDay = today.getDate();
-    if (currentDay >= cleanupDay) {
-      const blockers = cleanupBlockers(transactions, accounts, cardDebitDates);
-      if (blockers.length > 0) {
-        dbg(`🚫 Nettoyage auto bloqué — ${blockers.length} raison(s)`);
-        setAutoCleanupBlockedReasons(blockers);
-      } else {
-        dbg(`🧹 Nettoyage auto déclenché (jour ${currentDay} >= ${cleanupDay})`);
-        doCleanup(cardDebitDates, benefitData);
-      }
-    }
-  }, [ready, autoCleanup, cleanupDay, cardDebitDates, benefitData, doCleanup, cleanupBlockers, transactions, accounts]);
-
   // ── Persist on every state change ───────────────────────────────────────
-  useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData); },
-    [transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData, ready, persist]);
+  useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, checkingHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData); },
+    [transactions, templates, accounts, cleanupDay, autoCleanup, savingsHistory, checkingHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData, ready, persist]);
 
   // ── Actions ─────────────────────────────────────────────────────────────
   const add    = tx  => setTx(p => [{ ...tx, id:genId(), pointed:false }, ...p]);
@@ -894,6 +880,19 @@ function useStore(uid, email) {
   const updateSavingsSnapshot = (id, updates) => setSavingsHistory(p => p.map(e => e.id===id ? {...e,...updates} : e));
   const removeSavingsSnapshot = (id) => setSavingsHistory(p => p.filter(e => e.id !== id));
 
+  // ── Checking history actions ─────────────────────────────────────────────
+  // Entries: { id, date, monthKey, accountId, accountName, income, expense, balance, total, pointed, auto }
+  const addCheckingSnapshot    = (entry)          => setCheckingHistory(p => [{ ...entry, id: genId() }, ...p].sort((a,b) => b.date.localeCompare(a.date) || b.monthKey.localeCompare(a.monthKey)));
+  const removeCheckingSnapshot = (id)             => setCheckingHistory(p => p.filter(e => e.id !== id));
+
+  // Ref to always have fresh transactions/accounts in the auto-snapshot effect
+  const txRef       = useRef(transactions);
+  const accountsRef = useRef(accounts);
+  const cddRef2     = useRef(cardDebitDates);
+  useEffect(() => { txRef.current       = transactions;    }, [transactions]);
+  useEffect(() => { accountsRef.current = accounts;        }, [accounts]);
+  useEffect(() => { cddRef2.current     = cardDebitDates;  }, [cardDebitDates]);
+
   const snapDaysRef        = useRef(DEFAULT_SAVINGS_SNAP_DAYS);
   const snapActiveRef      = useRef(DEFAULT_SAVINGS_SNAP_ACTIVE);
   const cardDebitDatesRef  = useRef(DEFAULT_CARD_DEBIT_DATES);
@@ -922,6 +921,78 @@ function useStore(uid, email) {
     const blocked   = savingsAccounts.filter(a => a.savingsSubtype === "blocked").reduce((s, a) => s + (a.balance || 0), 0);
     addSavingsSnapshot({ date: dateKey, available, blocked, auto: true, note: "" });
   }, [ready]);
+
+  // ── Auto-snapshot comptes courants + nettoyage (effet unifié) ──────────────
+  // IMPORTANT : le snapshot DOIT s'exécuter avant le nettoyage pour ne pas
+  // perdre les transactions du mois précédent. Les deux logiques sont donc
+  // réunies dans un seul useEffect avec ordre d'exécution garanti.
+  //
+  // Le snapshot se déclenche dès la première ouverture du nouveau mois,
+  // quel que soit le jour (1er, 2, 3…), tant qu'il n'existe pas encore
+  // pour le mois précédent. Cas limite géré : cleanupDay = 1 est autorisé
+  // car le snapshot s'exécute toujours EN PREMIER dans cet effet.
+  useEffect(() => {
+    if (!ready || !loadedRef.current || !trustedRef.current) return;
+
+    const today      = new Date();
+    const currentDay = today.getDate();
+    const pad        = n => String(n).padStart(2, "0");
+
+    // ── 0. Purge des snapshots checking de plus de 6 mois ───────────────
+    // Calcule le monthKey limite : 6 mois avant le mois en cours
+    const limitDate = new Date(today.getFullYear(), today.getMonth() - 6, 1);
+    const limitMk   = `${limitDate.getFullYear()}-${pad(limitDate.getMonth()+1)}`;
+    setCheckingHistory(prev => {
+      const pruned = prev.filter(e => e.monthKey > limitMk);
+      if (pruned.length === prev.length) return prev; // rien à supprimer
+      dbg(`🗑️ Purge checking history — ${prev.length - pruned.length} entrée(s) supprimée(s) (avant ${limitMk})`);
+      return pruned;
+    });
+
+    // ── 1. Snapshot comptes courants ────────────────────────────────────
+    const checkingAccounts = accountsRef.current.filter(a => a.type === "checking");
+    if (checkingAccounts.length > 0) {
+      const prevM  = today.getMonth() === 0 ? 12 : today.getMonth();
+      const prevY  = today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear();
+      const prevMk = `${prevY}-${pad(prevM)}`;
+      const tx     = txRef.current;
+
+      checkingAccounts.forEach(acc => {
+        // Un seul snapshot par compte par mois précédent
+        if (checkingHistory.some(e => e.accountId === acc.id && e.monthKey === prevMk)) return;
+
+        const regular = tx.filter(t => mKey(t.date) === prevMk && t.accountId === acc.id && !t.isCard);
+        const cardTxs = tx.filter(t => mKey(t.date) === prevMk && t.accountId === acc.id && t.isCard);
+        if (regular.length === 0 && cardTxs.length === 0) return;
+
+        const income  = regular.filter(t => t.type === "income").reduce((s,t) => s+t.amount, 0);
+        const expense = regular.filter(t => t.type === "expense").reduce((s,t) => s+t.amount, 0)
+                      + cardTxs.reduce((s,t) => s+(t.type==="expense"?t.amount:-t.amount), 0);
+        const total   = regular.length + cardTxs.length;
+        const pointed = [...regular, ...cardTxs].filter(t => t.pointed).length;
+        const dateKey = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(currentDay)}`;
+        addCheckingSnapshot({
+          date: dateKey, monthKey: prevMk,
+          accountId: acc.id, accountName: acc.name,
+          income, expense, balance: income - expense,
+          total, pointed, auto: true,
+        });
+        dbg(`📊 Auto-snapshot checking — ${acc.name} / ${prevMk} (pris le ${currentDay})`);
+      });
+    }
+
+    // ── 2. Nettoyage automatique (après le snapshot) ─────────────────────
+    if (autoCleanup && currentDay >= cleanupDay) {
+      const blockers = cleanupBlockers(transactions, accounts, cardDebitDates);
+      if (blockers.length > 0) {
+        dbg(`🚫 Nettoyage auto bloqué — ${blockers.length} raison(s)`);
+        setAutoCleanupBlockedReasons(blockers);
+      } else {
+        dbg(`🧹 Nettoyage auto déclenché (jour ${currentDay} >= ${cleanupDay})`);
+        doCleanup(cardDebitDates, benefitData);
+      }
+    }
+  }, [ready, autoCleanup, cleanupDay, cardDebitDates, benefitData, doCleanup, cleanupBlockers, transactions, accounts]);
 
   // ── Benefit reconciliation batch ─────────────────────────────────────────
   // Runs once after Firestore data is fully loaded.
@@ -1042,6 +1113,7 @@ function useStore(uid, email) {
     cleanupDay, updateCleanupDay, autoCleanup, updateAutoCleanup, cleanupMonth, checkCleanupBlockers,
     autoCleanupBlockedReasons, clearAutoCleanupBlockedReasons: () => setAutoCleanupBlockedReasons(null),
     savingsHistory, addSavingsSnapshot, updateSavingsSnapshot, removeSavingsSnapshot,
+    checkingHistory, addCheckingSnapshot, removeCheckingSnapshot,
     savingsSnapDays, setSavingsSnapDays, savingsSnapActive, setSavingsSnapActive,
     cardDebitDates, setCardDebitDate, clearCardDebitDate,
     showFutureTx, setShowFutureTx,
@@ -1468,12 +1540,13 @@ function App() {
           </div>
         )}
         <div ref={scrollRef} style={{ flex:1, overflowY:"auto", paddingBottom:80 }}>
-          {tab==="dashboard"     && <Dashboard    store={store} onAdd={handleOpenForm} onGoSavings={()=>setTab("savingsStats")} onResetRef={dashboardResetRef} />}
+          {tab==="dashboard"     && <Dashboard    store={store} onAdd={handleOpenForm} onGoSavings={()=>setTab("savingsStats")} onGoCheckingStats={()=>setTab("checkingStats")} onResetRef={dashboardResetRef} />}
           {tab==="transactions"  && <Transactions store={store} onAdd={handleOpenForm} />}
           {tab==="settings"      && <Settings     store={store} user={user} />}
-          {tab==="savingsStats"  && <SavingsStats store={store} onBack={()=>setTab("dashboard")} />}
+          {tab==="savingsStats"  && <SavingsStats  store={store} onBack={()=>setTab("dashboard")} />}
+          {tab==="checkingStats" && <CheckingStats store={store} onBack={()=>setTab("dashboard")} />}
         </div>
-        <TabBar tab={tab === "savingsStats" ? "dashboard" : tab} setTab={setTab} onDashboardClick={()=>{ if(dashboardResetRef.current) dashboardResetRef.current(); if(scrollRef.current) scrollRef.current.scrollTop=0; }} />
+        <TabBar tab={["savingsStats","checkingStats"].includes(tab) ? "dashboard" : tab} setTab={setTab} onDashboardClick={()=>{ if(dashboardResetRef.current) dashboardResetRef.current(); if(scrollRef.current) scrollRef.current.scrollTop=0; }} />
         {showForm && <FormModal store={store} account={formAccount} sel={formSel} onClose={()=>setForm(false)} />}
       </div>
     </ThemeCtx.Provider>
@@ -1936,7 +2009,7 @@ function BenefitPage({ store, account, onClose }) {
     <div>
         {/* Header */}
         <div style={{ position:"sticky", top:0, zIndex:50, display:"flex", alignItems:"center", gap:12, padding:"8px 16px", borderBottom:"1px solid var(--border)", background:"var(--header-bg)", backdropFilter:"blur(20px)", flexShrink:0 }}>
-          <button onClick={onClose} style={{ background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.12)", borderRadius:8, width:30, height:30, color:"var(--header-muted)", fontSize:18, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>‹</button>
+          <button onClick={onClose} style={{ background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.12)", borderRadius:8, padding:"4px 10px", height:30, color:"var(--header-muted)", fontSize:13, fontWeight:500, display:"flex", alignItems:"center", justifyContent:"center", gap:4, flexShrink:0 }}>← Retour</button>
           <span style={{ fontSize:20 }}>🎫</span>
           <div style={S.flex1}>
             <p style={{ fontSize:18, fontWeight:700, color:"var(--header-text)", fontFamily:"'DM Serif Display',serif", letterSpacing:"-0.02em" }}>{account.name}</p>
@@ -2247,7 +2320,7 @@ function SynthCardPanel({ entry, sourceTxs, clickedTxId, setClickedTxId, store, 
   );
 }
 
-function Dashboard({ store, onAdd, onGoSavings, onResetRef }) {
+function Dashboard({ store, onAdd, onGoSavings, onGoCheckingStats, onResetRef }) {
   const [sel,              setSel]            = useState(nowMKey());
   const [selectedAccountId,setSelectedAccount] = useState("all");
   const [editingTx,        setEditingTx]      = useState(null);
@@ -2457,7 +2530,7 @@ function Dashboard({ store, onAdd, onGoSavings, onResetRef }) {
       {selectedAccountId==="all"
         ? <PageHeader title="Mon Budget" />
         : <div style={{ position:"sticky", top:0, zIndex:50, display:"flex", alignItems:"center", gap:12, padding:"8px 16px", borderBottom:"1px solid var(--border)", background:"var(--header-bg)", backdropFilter:"blur(20px)" }}>
-            <button onClick={()=>setSelectedAccount("all")} style={{ background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.12)", borderRadius:8, width:30, height:30, color:"var(--header-muted)", fontSize:18, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>‹</button>
+            <button onClick={()=>setSelectedAccount("all")} style={{ background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.12)", borderRadius:8, padding:"4px 10px", height:30, color:"var(--header-muted)", fontSize:13, fontWeight:500, display:"flex", alignItems:"center", justifyContent:"center", gap:4, flexShrink:0 }}>← Retour</button>
             <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:18, letterSpacing:"-0.02em", color:"var(--header-text)", flex:1, margin:0 }}>
               {store.accounts.find(a=>a.id===selectedAccountId)?.name || "Compte"}
             </p>
@@ -2529,7 +2602,7 @@ function Dashboard({ store, onAdd, onGoSavings, onResetRef }) {
                 <div style={S.flexRow10}><span style={{ fontSize:24 }}>💳</span><p style={{ fontSize:14, fontWeight:600, color:"var(--text)", letterSpacing:"0.04em", textTransform:"uppercase" }}>Comptes courants</p></div>
                 <p style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:checkingBalance>=0?"var(--green)":"var(--red)" }}>{fmtEur(checkingBalance)}</p>
               </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:accountBalances.savings.length>0?16:0 }}>
+              <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:8 }}>
                 {accountBalances.checking.map(({account,balance})=>(
                   <div key={account.id} onClick={()=>setSelectedAccount(account.id)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 12px", background:"var(--surface2)", borderRadius:"var(--radius-sm)", cursor:"pointer", transition:"background 0.15s" }}
                     onMouseEnter={e=>e.currentTarget.style.background="var(--surface3)"}
@@ -2545,13 +2618,15 @@ function Dashboard({ store, onAdd, onGoSavings, onResetRef }) {
                   </div>
                 ))}
               </div>
+              <button onClick={onGoCheckingStats} style={{ width:"100%", padding:"9px", marginBottom:accountBalances.savings.length>0?16:0, borderRadius:"var(--radius-sm)", background:"rgba(76,175,130,0.06)", border:"1px dashed rgba(76,175,130,0.4)", color:"var(--green)", fontSize:13, fontWeight:600, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                <span style={{ fontSize:15 }}>📊</span> Statistiques comptes courants
+              </button>
             </>}
             {accountBalances.savings.length>0 && <>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
                 <div style={S.flexRow10}><span style={{ fontSize:24 }}>💰</span><p style={{ fontSize:14, fontWeight:600, color:"var(--text)", letterSpacing:"0.04em", textTransform:"uppercase" }}>Comptes épargne</p></div>
                 <div style={S.flexRow8}>
                   <p style={{ fontSize:22, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:savingsBalance>=0?"var(--green)":"var(--red)" }}>{fmtEur(savingsBalance)}</p>
-                  <button onClick={onGoSavings} style={{ padding:"5px 10px", borderRadius:8, background:"var(--gold-dim)", border:"1px solid var(--gold)", color:"var(--gold)", fontSize:11, fontWeight:700, whiteSpace:"nowrap", flexShrink:0 }}>📈 Stats</button>
                 </div>
               </div>
               <div style={S.flexCol8}>
@@ -2559,6 +2634,9 @@ function Dashboard({ store, onAdd, onGoSavings, onResetRef }) {
                   <SavingsBalanceRow key={account.id} account={account} balance={balance} store={store} />
                 ))}
               </div>
+              <button onClick={onGoSavings} style={{ width:"100%", padding:"9px", marginTop:8, borderRadius:"var(--radius-sm)", background:"rgba(201,168,76,0.06)", border:"1px dashed rgba(201,168,76,0.4)", color:"var(--gold)", fontSize:13, fontWeight:600, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                <span style={{ fontSize:15 }}>📈</span> Statistiques épargne
+              </button>
             </>}
             {benefitAccounts.length>0 && <>
               {(accountBalances.checking.length>0||accountBalances.savings.length>0) && <div style={{ height:1, background:"var(--border)", margin:"16px 0" }} />}
@@ -3912,6 +3990,369 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
           {error && <p style={{ color:"var(--red)", fontSize:13 }}>{error}</p>}
           <button onClick={handleSubmit} style={{ padding:"14px", borderRadius:"var(--radius)", background:"linear-gradient(135deg,var(--gold-light),var(--gold))", border:"none", color:"#0e0f13", fontSize:16, fontWeight:700, boxShadow:"0 4px 20px rgba(201,168,76,0.35)", marginTop:4 }}>Enregistrer</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── CheckingStats ─────────────────────────────────────────────────────────
+
+function CheckingBarChart({ months }) {
+  const [tooltip, setTooltip] = useState(null);
+  const W = 440, H = 180, PAD = { top: 16, right: 16, bottom: 36, left: 56 };
+  const innerW = W - PAD.left - PAD.right;
+  const innerH = H - PAD.top - PAD.bottom;
+
+  const allVals = months.flatMap(m => [m.income, m.expense]);
+  const maxV    = Math.max(...allVals, 1);
+
+  const barGroupW = innerW / Math.max(months.length, 1);
+  const barW      = Math.min(barGroupW * 0.35, 22);
+  const gap       = barW * 0.6;
+
+  const yOf = v => PAD.top + innerH - (v / maxV) * innerH;
+  const yTicks = [0, 1, 2, 3].map(i => maxV * i / 3);
+
+  const handleMouseMove = (e) => {
+    const svg  = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const mx   = (e.clientX - rect.left) * (W / rect.width);
+    let best = null, bestDist = Infinity;
+    months.forEach((m, i) => {
+      const cx = PAD.left + barGroupW * i + barGroupW / 2;
+      const d  = Math.abs(mx - cx);
+      if (d < bestDist) { bestDist = d; best = { ...m, i, cx }; }
+    });
+    if (best && bestDist < barGroupW * 0.7) setTooltip(best);
+    else setTooltip(null);
+  };
+
+  return (
+    <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", padding:"14px 0 0", marginBottom:16, overflow:"hidden" }}>
+      <p style={{ fontSize:11, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.08em", padding:"0 16px", marginBottom:8 }}>Revenus / Dépenses par mois</p>
+      <div style={{ overflowX:"auto" }}>
+        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ display:"block", minWidth:280, width:"100%" }}
+          onMouseMove={handleMouseMove} onMouseLeave={()=>setTooltip(null)}>
+          {yTicks.map((v, i) => (
+            <g key={i}>
+              <line x1={PAD.left} x2={W - PAD.right} y1={yOf(v)} y2={yOf(v)} stroke="rgba(255,255,255,0.05)" strokeWidth="1"/>
+              <text x={PAD.left - 6} y={yOf(v) + 4} textAnchor="end" fontSize="9" fill="rgba(240,236,228,0.35)" fontFamily="DM Sans,sans-serif">
+                {v >= 1000 ? `${(v/1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : Math.round(v)}
+              </text>
+            </g>
+          ))}
+          {months.map((m, i) => {
+            const cx    = PAD.left + barGroupW * i + barGroupW / 2;
+            const incX  = cx - gap / 2 - barW;
+            const expX  = cx + gap / 2;
+            const incH  = Math.max((m.income  / maxV) * innerH, 1);
+            const expH  = Math.max((m.expense / maxV) * innerH, 1);
+            const isHov = tooltip?.i === i;
+            return (
+              <g key={i}>
+                <rect x={incX} y={yOf(m.income)}  width={barW} height={incH} rx="3" fill={isHov ? "#5dc994" : "#4caf82"} opacity={isHov ? 1 : 0.75} />
+                <rect x={expX} y={yOf(m.expense)} width={barW} height={expH} rx="3" fill={isHov ? "#f07070" : "#e05c5c"} opacity={isHov ? 1 : 0.75} />
+                <text x={cx} y={H - 6} textAnchor="middle" fontSize="9" fill="rgba(240,236,228,0.4)" fontFamily="DM Sans,sans-serif">{m.label}</text>
+              </g>
+            );
+          })}
+          {tooltip && <line x1={tooltip.cx} x2={tooltip.cx} y1={PAD.top} y2={PAD.top + innerH} stroke="rgba(255,255,255,0.12)" strokeWidth="1" strokeDasharray="3 3"/>}
+        </svg>
+      </div>
+      {tooltip ? (
+        <div style={{ padding:"10px 16px 12px", borderTop:"1px solid var(--border)", display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+          {[
+            { label:"Revenus",  val:tooltip.income,  color:"#4caf82" },
+            { label:"Dépenses", val:tooltip.expense, color:"#e05c5c" },
+            { label:"Solde",    val:tooltip.balance, color: tooltip.balance >= 0 ? "#c9a84c" : "#e05c5c" },
+          ].map(c => (
+            <div key={c.label}>
+              <p style={{ fontSize:9, color:"var(--text-sub)", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:3 }}>{c.label}</p>
+              <p style={{ fontSize:14, fontWeight:700, color:c.color, fontFamily:"'DM Serif Display',serif" }}>{c.val >= 0 && c.label !== "Dépenses" ? "+" : ""}{fmtEur(c.val)}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ padding:"8px 16px 10px", borderTop:"1px solid var(--border)" }}>
+          <p style={{ fontSize:11, color:"var(--text-sub)", textAlign:"center" }}>Survolez le graphique pour voir les détails</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CheckingStats({ store, onBack }) {
+  const checkingAccounts = store.accounts.filter(a => a.type === "checking");
+  const [accountId, setAccountId] = useState("all");
+
+  const nowMk = nowMKey();
+  const today = new Date();
+
+  // ── Données du MOIS EN COURS (depuis les transactions live) ────────────
+  const liveStats = useMemo(() => {
+    const accounts = accountId === "all" ? checkingAccounts : checkingAccounts.filter(a => a.id === accountId);
+    return accounts.map(acc => {
+      const regular = store.transactions.filter(t => mKey(t.date) === nowMk && t.accountId === acc.id && !t.isCard);
+      const cardTxs = store.transactions.filter(t => mKey(t.date) === nowMk && t.accountId === acc.id && t.isCard);
+      const income  = regular.filter(t => t.type === "income").reduce((s,t) => s+t.amount, 0);
+      const expense = regular.filter(t => t.type === "expense").reduce((s,t) => s+t.amount, 0)
+                    + cardTxs.reduce((s,t) => s+(t.type==="expense"?t.amount:-t.amount), 0);
+      const total   = regular.length + cardTxs.length;
+      const pointed = [...regular, ...cardTxs].filter(t => t.pointed).length;
+      return { accountId: acc.id, accountName: acc.name, income, expense, balance: income-expense, total, pointed };
+    });
+  }, [store.transactions, accountId, checkingAccounts, nowMk]);
+
+  const currentLive = useMemo(() => ({
+    income:  liveStats.reduce((s,a) => s+a.income,  0),
+    expense: liveStats.reduce((s,a) => s+a.expense, 0),
+    balance: liveStats.reduce((s,a) => s+a.balance, 0),
+    total:   liveStats.reduce((s,a) => s+a.total,   0),
+    pointed: liveStats.reduce((s,a) => s+a.pointed, 0),
+  }), [liveStats]);
+
+  // ── Snapshots historiques ──────────────────────────────────────────────
+  // Filtrés par compte, groupés par monthKey, agrégés si "tous"
+  const historyRows = useMemo(() => {
+    const entries = accountId === "all"
+      ? store.checkingHistory
+      : store.checkingHistory.filter(e => e.accountId === accountId);
+
+    // Regrouper par monthKey (important si "tous" = plusieurs comptes par mois)
+    const byMonth = {};
+    entries.forEach(e => {
+      if (!byMonth[e.monthKey]) byMonth[e.monthKey] = { monthKey: e.monthKey, date: e.date, income: 0, expense: 0, balance: 0, total: 0, pointed: 0, accounts: [] };
+      byMonth[e.monthKey].income  += e.income;
+      byMonth[e.monthKey].expense += e.expense;
+      byMonth[e.monthKey].balance += e.balance;
+      byMonth[e.monthKey].total   += e.total;
+      byMonth[e.monthKey].pointed += e.pointed;
+      byMonth[e.monthKey].accounts.push(e.accountName);
+    });
+
+    // Tri newest-first
+    return Object.values(byMonth).sort((a,b) => b.monthKey.localeCompare(a.monthKey));
+  }, [store.checkingHistory, accountId]);
+
+  // ── Combiner historique + mois en cours pour sparklines & graphique ────
+  // On prend les 5 derniers mois d'historique + le mois en cours
+  const last5History = historyRows.slice(0, 5).reverse(); // oldest→newest
+  const allMonthsForChart = useMemo(() => {
+    const pad = n => String(n).padStart(2,"0");
+    const fmtLabel = mk => new Date(mk+"-02T00:00:00").toLocaleDateString("fr-FR",{month:"short"}).replace(".","");
+    const combined = [
+      ...last5History.map(r => ({ label: fmtLabel(r.monthKey), income: r.income, expense: r.expense, balance: r.balance })),
+      { label: fmtLabel(nowMk), income: currentLive.income, expense: currentLive.expense, balance: currentLive.balance },
+    ];
+    return combined;
+  }, [last5History, currentLive, nowMk]);
+
+  const sparkIncome  = allMonthsForChart.map(m => m.income);
+  const sparkExpense = allMonthsForChart.map(m => m.expense);
+  const sparkBalance = allMonthsForChart.map(m => m.balance);
+
+  // ── Comparaison vs mois précédent ─────────────────────────────────────
+  const prevRow = historyRows[0]; // snapshot du mois précédent (le plus récent de l'historique)
+  const diffBalance = prevRow ? currentLive.balance - prevRow.balance : null;
+  const diffExpense = prevRow ? currentLive.expense - prevRow.expense : null;
+  const diffIncome  = prevRow ? currentLive.income  - prevRow.income  : null;
+
+  // ── Indicateurs jours ──────────────────────────────────────────────────
+  const daysInMonth  = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const dayOfMonth   = today.getDate();
+  const daysLeft     = daysInMonth - dayOfMonth;
+  const avgDailyExp  = daysInMonth > 0 ? currentLive.expense / daysInMonth : 0;
+  const eurPerDayLeft = currentLive.balance > 0 ? currentLive.balance / Math.max(daysLeft, 1) : 0;
+
+  // ── Taux de pointage mois en cours ────────────────────────────────────
+  const pointedRate = currentLive.total > 0 ? Math.round((currentLive.pointed / currentLive.total) * 100) : null;
+
+  const fmtMonthLong = mk => new Date(mk+"-02T00:00:00").toLocaleDateString("fr-FR",{month:"long",year:"numeric"});
+
+  return (
+    <div style={{ minHeight:"100vh", background:"var(--bg)" }}>
+      {/* Header */}
+      <div style={{ background:"var(--header-bg)", padding: COMPACT_STICKY_HEADER ? "8px 16px" : "16px 20px", borderBottom:"1px solid var(--border)", ...(COMPACT_STICKY_HEADER ? { position:"sticky", top:0, zIndex:50, backdropFilter:"blur(20px)" } : {}) }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <button onClick={onBack} style={{ background:"var(--header-btn-bg)", border:"1px solid var(--header-btn-border)", borderRadius:8, padding: COMPACT_STICKY_HEADER ? "4px 10px" : "6px 12px", color:"var(--header-muted)", fontSize:13, fontWeight:500 }}>← Retour</button>
+          <p style={{ fontFamily:"'DM Serif Display',serif", fontSize: COMPACT_STICKY_HEADER ? 18 : 26, letterSpacing:"-0.02em", color:"var(--header-text)" }}>Statistiques comptes courants</p>
+        </div>
+      </div>
+
+      <div style={{ padding:"16px" }}>
+
+        {/* Sélecteur de compte */}
+        {checkingAccounts.length > 1 && (
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:14 }}>
+            {[{ id:"all", name:"Tous" }, ...checkingAccounts].map(acc => (
+              <button key={acc.id} onClick={()=>setAccountId(acc.id)}
+                style={{ padding:"5px 12px", borderRadius:20, fontSize:12, fontWeight:600, cursor:"pointer", border:"1px solid", transition:"all 0.15s",
+                  background:  accountId === acc.id ? "var(--gold-dim)"  : "var(--surface2)",
+                  color:       accountId === acc.id ? "var(--gold)"      : "var(--text-sub)",
+                  borderColor: accountId === acc.id ? "var(--gold)"      : "var(--border)" }}>
+                {acc.name}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* KPI mois en cours */}
+        <p style={{ fontSize:11, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>
+          {fmtMonthLong(nowMk)} — en cours
+        </p>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:16 }}>
+          {[
+            { label:"Revenus",  value:currentLive.income,  color:"var(--green)", spark:sparkIncome  },
+            { label:"Dépenses", value:currentLive.expense, color:"var(--red)",   spark:sparkExpense },
+            { label:"Solde net",value:currentLive.balance, color:currentLive.balance>=0?"var(--gold)":"var(--red)", spark:sparkBalance },
+          ].map(c => (
+            <div key={c.label} style={{ background:"var(--surface)", borderRadius:10, padding:"10px 12px", border:"1px solid var(--border)" }}>
+              <p style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>{c.label}</p>
+              <p style={{ fontSize:15, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:c.color, marginBottom:4 }}>{fmtEur(c.value)}</p>
+              <MiniSparkline data={c.spark} color={c.color} />
+            </div>
+          ))}
+        </div>
+
+        {/* Indicateurs 2×2 */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:16 }}>
+
+          {/* Transactions pointées */}
+          <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:10, padding:"12px 14px" }}>
+            <p style={{ fontSize:10, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Tx pointées</p>
+            {pointedRate === null ? (
+              <p style={{ fontSize:13, color:"var(--text-muted)" }}>Aucune tx</p>
+            ) : <>
+              <div style={{ display:"flex", alignItems:"baseline", gap:4, marginBottom:6 }}>
+                <span style={{ fontFamily:"'DM Serif Display',serif", fontSize:22, fontWeight:700,
+                  color: pointedRate===100?"var(--green)":pointedRate>=50?"var(--gold)":"var(--red)" }}>{pointedRate}%</span>
+                <span style={{ fontSize:11, color:"var(--text-muted)" }}>{currentLive.pointed}/{currentLive.total}</span>
+              </div>
+              <div style={{ height:5, borderRadius:3, background:"var(--surface2)", overflow:"hidden" }}>
+                <div style={{ height:"100%", borderRadius:3, width:`${pointedRate}%`, transition:"width 0.4s",
+                  background: pointedRate===100?"var(--green)":pointedRate>=50?"var(--gold)":"var(--red)" }} />
+              </div>
+              <p style={{ fontSize:10, color:"var(--text-muted)", marginTop:5 }}>
+                {pointedRate===100?"✓ Mois soldé":`${currentLive.total-currentLive.pointed} non pointée${currentLive.total-currentLive.pointed>1?"s":""}`}
+              </p>
+            </>}
+          </div>
+
+          {/* Dépense moyenne / jour */}
+          <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:10, padding:"12px 14px" }}>
+            <p style={{ fontSize:10, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Dépense / jour</p>
+            <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:22, fontWeight:700, color:"var(--red)", marginBottom:2 }}>{fmtEur(avgDailyExp)}</p>
+            <p style={{ fontSize:10, color:"var(--text-muted)" }}>Sur {daysInMonth}j du mois</p>
+          </div>
+
+          {/* Euros restants / jour */}
+          <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:10, padding:"12px 14px" }}>
+            <p style={{ fontSize:10, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>Restant / jour</p>
+            {currentLive.balance <= 0
+              ? <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:22, fontWeight:700, color:"var(--red)" }}>—</p>
+              : <>
+                  <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:22, fontWeight:700, color:"var(--green)", marginBottom:2 }}>{fmtEur(eurPerDayLeft)}</p>
+                  <p style={{ fontSize:10, color:"var(--text-muted)" }}>{daysLeft}j restants ce mois-ci</p>
+                </>
+            }
+          </div>
+
+          {/* vs mois précédent */}
+          <div style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:10, padding:"12px 14px" }}>
+            <p style={{ fontSize:10, fontWeight:600, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>
+              vs {prevRow ? new Date(prevRow.monthKey+"-02T00:00:00").toLocaleDateString("fr-FR",{month:"short"}).replace(".","") : "mois préc."}
+            </p>
+            {diffBalance === null
+              ? <p style={{ fontSize:12, color:"var(--text-muted)" }}>Pas encore d'historique</p>
+              : <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                  {[
+                    { label:"Solde",    diff: diffBalance },
+                    { label:"Revenus",  diff: diffIncome  },
+                    { label:"Dépenses", diff: -diffExpense }, // moins de dépenses = positif
+                  ].map(row => (
+                    <div key={row.label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                      <span style={{ fontSize:11, color:"var(--text-muted)" }}>{row.label}</span>
+                      <span style={{ fontSize:12, fontWeight:700,
+                        color: row.diff > 0 ? "var(--green)" : row.diff < 0 ? "var(--red)" : "var(--text-sub)" }}>
+                        {row.diff > 0 ? "+" : ""}{fmtEur(row.label === "Dépenses" ? -diffExpense : row.diff)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+            }
+          </div>
+        </div>
+
+        {/* Graphique */}
+        {allMonthsForChart.length >= 2 && <CheckingBarChart months={allMonthsForChart} />}
+
+        {/* Légende */}
+        <div style={{ display:"flex", gap:12, marginBottom:16, flexWrap:"wrap" }}>
+          <span style={{ fontSize:11, color:"var(--green)", fontWeight:600, display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10,height:10,borderRadius:2,background:"var(--green)",display:"inline-block" }}/>Revenus</span>
+          <span style={{ fontSize:11, color:"var(--red)", fontWeight:600, display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10,height:10,borderRadius:2,background:"var(--red)",display:"inline-block" }}/>Dépenses</span>
+        </div>
+
+        {/* Historique des snapshots */}
+        <p style={{ fontSize:11, fontWeight:700, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:10 }}>
+          Historique mensuel {historyRows.length === 0 ? "" : `(${historyRows.length} mois)`}
+        </p>
+
+        {historyRows.length === 0 ? (
+          <div style={{ textAlign:"center", padding:"40px 20px", color:"var(--text-muted)", background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)" }}>
+            <p style={{ fontSize:32, marginBottom:10 }}>📊</p>
+            <p style={{ fontSize:14, fontWeight:500, marginBottom:6 }}>Historique vide pour l'instant</p>
+            <p style={{ fontSize:12, lineHeight:1.6 }}>Un snapshot automatique est pris le 1er de chaque mois. Il capturera les données du mois précédent avant le nettoyage.</p>
+          </div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {historyRows.map((row, i) => {
+              const prevHistRow = historyRows[i + 1];
+              const varBal = prevHistRow != null ? row.balance - prevHistRow.balance : null;
+              const daysInMonth = new Date(
+                parseInt(row.monthKey.split("-")[0]),
+                parseInt(row.monthKey.split("-")[1]),
+                0
+              ).getDate();
+              const avgDaily = daysInMonth > 0 ? row.expense / daysInMonth : 0;
+              return (
+                <div key={row.monthKey} className="fade-up" style={{ background:"var(--surface)", border:"1px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden", animationDelay:`${i*0.03}s` }}>
+                  {/* En-tête mois */}
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px", background:"var(--surface2)", borderBottom:"1px solid var(--border)" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontFamily:"'DM Serif Display',serif", fontSize:15, fontWeight:600, color:"var(--text)" }}>
+                        {fmtMonthLong(row.monthKey)}
+                      </span>
+                      {row.accounts && accountId === "all" && row.accounts.length > 1 && (
+                        <span style={{ fontSize:10, color:"var(--text-sub)" }}>{row.accounts.length} comptes</span>
+                      )}
+                    </div>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontFamily:"'DM Serif Display',serif", fontSize:15, fontWeight:700, color:row.balance>=0?"var(--green)":"var(--red)" }}>
+                        {row.balance>=0?"+":""}{fmtEur(row.balance)}
+                      </span>
+                      {varBal !== null && <Variation value={varBal} />}
+                    </div>
+                  </div>
+                  {/* Données : revenus | dépenses | dépense/jour */}
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:0 }}>
+                    <div style={{ padding:"10px 14px", borderRight:"1px solid var(--border)" }}>
+                      <p style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:3 }}>Revenus</p>
+                      <p style={{ fontSize:15, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--green)" }}>{fmtEur(row.income)}</p>
+                    </div>
+                    <div style={{ padding:"10px 14px", borderRight:"1px solid var(--border)" }}>
+                      <p style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:3 }}>Dépenses</p>
+                      <p style={{ fontSize:15, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--red)" }}>{fmtEur(row.expense)}</p>
+                    </div>
+                    <div style={{ padding:"10px 14px" }}>
+                      <p style={{ fontSize:10, color:"var(--text-sub)", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:3 }}>Moy./jour</p>
+                      <p style={{ fontSize:15, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--text)" }}>{fmtEur(avgDaily)}</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
