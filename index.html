@@ -1555,7 +1555,8 @@ function App() {
 }
 
 // ─── BoursePage ────────────────────────────────────────────────────────────
-const FINNHUB_KEY = "d6jasdpr01ql467j0r90d6jasdpr01ql467j0r9g";
+const FINNHUB_KEY   = "d6jasdpr01ql467j0r90d6jasdpr01ql467j0r9g";
+const FINNHUB_PROXY = "https://corsproxy.io/?https://finnhub.io/api/v1";
 const BOURSE_STORAGE_KEY = "monbudget_portefeuille_v1";
 
 function loadPortefeuille() {
@@ -1585,7 +1586,7 @@ function BoursePage() {
     const results = {};
     await Promise.all(pos.map(async p => {
       try {
-        const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${p.symbol}&token=${FINNHUB_KEY}`);
+        const r = await fetch(`${FINNHUB_PROXY}/quote?symbol=${p.symbol}&token=${FINNHUB_KEY}`);
         const d = await r.json();
         if (d.c) results[p.symbol] = d; // { c: current, d: change, dp: change%, h, l, o, pc }
       } catch {}
@@ -1604,7 +1605,7 @@ function BoursePage() {
     setSearchLoading(true);
     searchDebounce.current = setTimeout(async () => {
       try {
-        const r = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(searchQ)}&token=${FINNHUB_KEY}`);
+        const r = await fetch(`${FINNHUB_PROXY}/search?q=${encodeURIComponent(searchQ)}&token=${FINNHUB_KEY}`);
         const d = await r.json();
         setSearchRes((d.result || []).filter(x => x.type === "Common Stock" || x.type === "EQS").slice(0, 8));
       } catch { setSearchRes([]); }
@@ -1657,7 +1658,7 @@ function BoursePage() {
       setLocalLoad(true);
       dbRef.current = setTimeout(async () => {
         try {
-          const r = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(localQ)}&token=${FINNHUB_KEY}`);
+          const r = await fetch(`${FINNHUB_PROXY}/search?q=${encodeURIComponent(localQ)}&token=${FINNHUB_KEY}`);
           const d = await r.json();
           setLocalRes((d.result || []).filter(x => x.type === "Common Stock" || x.type === "EQS").slice(0, 6));
         } catch {}
