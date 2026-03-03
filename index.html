@@ -1542,6 +1542,7 @@ function App() {
         <div ref={scrollRef} style={{ flex:1, overflowY:"auto", paddingBottom:80 }}>
           {tab==="dashboard"     && <Dashboard    store={store} onAdd={handleOpenForm} onGoSavings={()=>setTab("savingsStats")} onGoCheckingStats={()=>setTab("checkingStats")} onResetRef={dashboardResetRef} />}
           {tab==="transactions"  && <Transactions store={store} onAdd={handleOpenForm} />}
+          {tab==="bourse"        && <BoursePage   store={store} />}
           {tab==="settings"      && <Settings     store={store} user={user} />}
           {tab==="savingsStats"  && <SavingsStats  store={store} onBack={()=>setTab("dashboard")} />}
           {tab==="checkingStats" && <CheckingStats store={store} onBack={()=>setTab("dashboard")} />}
@@ -1550,6 +1551,321 @@ function App() {
         {showForm && <FormModal store={store} account={formAccount} sel={formSel} onClose={()=>setForm(false)} />}
       </div>
     </ThemeCtx.Provider>
+  );
+}
+
+// ─── BoursePage ────────────────────────────────────────────────────────────
+const FINNHUB_KEY = "d6jasdpr01ql467j0r90d6jasdpr01ql467j0r9g";
+const BOURSE_STORAGE_KEY = "monbudget_portefeuille_v1";
+
+function loadPortefeuille() {
+  try { return JSON.parse(localStorage.getItem(BOURSE_STORAGE_KEY)) || []; } catch { return []; }
+}
+function savePortefeuille(positions) {
+  localStorage.setItem(BOURSE_STORAGE_KEY, JSON.stringify(positions));
+}
+
+function BoursePage() {
+  const [positions, setPositions] = useState(loadPortefeuille);
+  const [quotes, setQuotes]       = useState({});       // { symbol: { c, d, dp } }
+  const [loading, setLoading]     = useState(false);
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const [showForm, setShowForm]   = useState(false);
+  const [editPos, setEditPos]     = useState(null);     // position en cours d'édition
+  const [searchQ, setSearchQ]     = useState("");
+  const [searchRes, setSearchRes] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const searchDebounce = useRef(null);
+
+  // ── Fetch des cours pour toutes les positions ──────────────────────────────
+  const fetchQuotes = useCallback(async (pos = positions) => {
+    if (!pos.length) return;
+    setLoading(true);
+    const results = {};
+    await Promise.all(pos.map(async p => {
+      try {
+        const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${p.symbol}&token=${FINNHUB_KEY}`);
+        const d = await r.json();
+        if (d.c) results[p.symbol] = d; // { c: current, d: change, dp: change%, h, l, o, pc }
+      } catch {}
+    }));
+    setQuotes(results);
+    setLastRefresh(new Date());
+    setLoading(false);
+  }, [positions]);
+
+  useEffect(() => { fetchQuotes(); }, []);
+
+  // ── Recherche de symbole ───────────────────────────────────────────────────
+  useEffect(() => {
+    clearTimeout(searchDebounce.current);
+    if (!searchQ.trim() || searchQ.length < 2) { setSearchRes([]); return; }
+    setSearchLoading(true);
+    searchDebounce.current = setTimeout(async () => {
+      try {
+        const r = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(searchQ)}&token=${FINNHUB_KEY}`);
+        const d = await r.json();
+        setSearchRes((d.result || []).filter(x => x.type === "Common Stock" || x.type === "EQS").slice(0, 8));
+      } catch { setSearchRes([]); }
+      setSearchLoading(false);
+    }, 500);
+  }, [searchQ]);
+
+  // ── Sauvegarde automatique ─────────────────────────────────────────────────
+  useEffect(() => { savePortefeuille(positions); }, [positions]);
+
+  // ── Calculs portefeuille ───────────────────────────────────────────────────
+  const rows = positions.map(p => {
+    const q = quotes[p.symbol];
+    const currentPrice = q ? q.c : null;
+    const valeurActuelle = currentPrice !== null ? currentPrice * p.quantite : null;
+    const valeurAchat    = p.prixAchat * p.quantite;
+    const pvLatente      = valeurActuelle !== null ? valeurActuelle - valeurAchat : null;
+    const pvPct          = valeurActuelle !== null ? ((valeurActuelle - valeurAchat) / valeurAchat) * 100 : null;
+    const variJour       = q ? q.d * p.quantite : null;
+    const variJourPct    = q ? q.dp : null;
+    return { ...p, currentPrice, valeurActuelle, valeurAchat, pvLatente, pvPct, variJour, variJourPct };
+  });
+
+  const totalAchat    = rows.reduce((s, r) => s + r.valeurAchat, 0);
+  const totalActuel   = rows.reduce((s, r) => r.valeurActuelle !== null ? s + r.valeurActuelle : s, 0);
+  const totalPV       = totalActuel - totalAchat;
+  const totalPVPct    = totalAchat > 0 ? (totalPV / totalAchat) * 100 : 0;
+  const totalVariJour = rows.reduce((s, r) => r.variJour !== null ? s + r.variJour : s, 0);
+
+  // ── Helpers UI ────────────────────────────────────────────────────────────
+  const clr = v => v > 0 ? "#4caf7d" : v < 0 ? "#e05c5c" : "var(--text-muted)";
+  const fmtN = (n, dec=2) => n === null || n === undefined ? "—" : (n >= 0 ? "+" : "") + n.toFixed(dec);
+  const fmtPrice = n => n === null ? "—" : n.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // ── Formulaire d'ajout/édition ────────────────────────────────────────────
+  function PositionForm({ initial, onSave, onClose }) {
+    const [symbol,    setSymbol]    = useState(initial?.symbol    || "");
+    const [nom,       setNom]       = useState(initial?.nom       || "");
+    const [quantite,  setQuantite]  = useState(initial?.quantite  || "");
+    const [prixAchat, setPrixAchat] = useState(initial?.prixAchat || "");
+    const [devise,    setDevise]    = useState(initial?.devise     || "USD");
+    const [localQ,    setLocalQ]    = useState("");
+    const [localRes,  setLocalRes]  = useState([]);
+    const [localLoad, setLocalLoad] = useState(false);
+    const dbRef = useRef(null);
+
+    useEffect(() => {
+      clearTimeout(dbRef.current);
+      if (!localQ.trim() || localQ.length < 2) { setLocalRes([]); return; }
+      setLocalLoad(true);
+      dbRef.current = setTimeout(async () => {
+        try {
+          const r = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(localQ)}&token=${FINNHUB_KEY}`);
+          const d = await r.json();
+          setLocalRes((d.result || []).filter(x => x.type === "Common Stock" || x.type === "EQS").slice(0, 6));
+        } catch {}
+        setLocalLoad(false);
+      }, 400);
+    }, [localQ]);
+
+    const handleSubmit = () => {
+      if (!symbol || !quantite || !prixAchat) return;
+      onSave({ id: initial?.id || genId(), symbol: symbol.toUpperCase(), nom: nom || symbol.toUpperCase(), quantite: parseFloat(quantite), prixAchat: parseFloat(prixAchat), devise });
+    };
+
+    const inputStyle = { width:"100%", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:10, padding:"10px 12px", fontSize:14, color:"var(--text)", boxSizing:"border-box" };
+
+    return (
+      <div style={S.overlay} onClick={onClose}>
+        <div onClick={e=>e.stopPropagation()} style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:420, display:"flex", flexDirection:"column", gap:14 }}>
+          <p style={S.modalTitle}>{initial ? "Modifier la position" : "Ajouter une action"}</p>
+
+          {/* Recherche symbole */}
+          {!initial && (
+            <div style={{ position:"relative" }}>
+              <input style={inputStyle} placeholder="Rechercher une action (ex: Apple, LVMH…)" value={localQ} onChange={e=>setLocalQ(e.target.value)} />
+              {localLoad && <span style={{ position:"absolute", right:10, top:10, fontSize:12, color:"var(--text-muted)" }}>…</span>}
+              {localRes.length > 0 && (
+                <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:10, zIndex:10, maxHeight:200, overflowY:"auto", marginTop:4 }}>
+                  {localRes.map(r => (
+                    <div key={r.symbol} onClick={()=>{ setSymbol(r.symbol); setNom(r.description); setLocalQ(""); setLocalRes([]); }}
+                      style={{ padding:"10px 14px", cursor:"pointer", borderBottom:"1px solid var(--border)", fontSize:13 }}>
+                      <span style={{ fontWeight:600, color:"var(--gold)" }}>{r.symbol}</span>
+                      <span style={{ color:"var(--text-muted)", marginLeft:8 }}>{r.description}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ display:"flex", gap:8 }}>
+            <input style={{...inputStyle, flex:1}} placeholder="Symbole (ex: AAPL)" value={symbol} onChange={e=>setSymbol(e.target.value.toUpperCase())} readOnly={!!initial} />
+            <select style={{...inputStyle, width:90, flex:"none"}} value={devise} onChange={e=>setDevise(e.target.value)}>
+              <option>USD</option><option>EUR</option><option>GBP</option><option>CHF</option>
+            </select>
+          </div>
+
+          <input style={inputStyle} placeholder="Nom (ex: Apple Inc.)" value={nom} onChange={e=>setNom(e.target.value)} />
+
+          <div style={{ display:"flex", gap:8 }}>
+            <input style={{...inputStyle, flex:1}} type="number" placeholder="Quantité" value={quantite} onChange={e=>setQuantite(e.target.value)} min="0" step="any" />
+            <input style={{...inputStyle, flex:1}} type="number" placeholder={`Prix d'achat (${devise})`} value={prixAchat} onChange={e=>setPrixAchat(e.target.value)} min="0" step="any" />
+          </div>
+
+          <div style={{ display:"flex", gap:8, marginTop:4 }}>
+            <button onClick={onClose} style={{ flex:1, padding:"11px 0", borderRadius:12, background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text-muted)", fontWeight:600, fontSize:14 }}>Annuler</button>
+            <button onClick={handleSubmit} disabled={!symbol||!quantite||!prixAchat}
+              style={{ flex:2, padding:"11px 0", borderRadius:12, background: (!symbol||!quantite||!prixAchat) ? "var(--surface2)" : "var(--gold-dim)", border:"1px solid var(--gold)", color: (!symbol||!quantite||!prixAchat) ? "var(--text-muted)" : "var(--gold)", fontWeight:600, fontSize:14 }}>
+              {initial ? "Enregistrer" : "Ajouter"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const handleSave = (pos) => {
+    let updated;
+    if (editPos) {
+      updated = positions.map(p => p.id === pos.id ? pos : p);
+    } else {
+      if (positions.find(p => p.symbol === pos.symbol)) { alert("Cette action est déjà dans votre portefeuille."); return; }
+      updated = [...positions, pos];
+    }
+    setPositions(updated);
+    fetchQuotes(updated);
+    setShowForm(false);
+    setEditPos(null);
+  };
+
+  const handleDelete = (id) => {
+    const updated = positions.filter(p => p.id !== id);
+    setPositions(updated);
+    setQuotes(q => { const n={...q}; const sym=positions.find(p=>p.id===id)?.symbol; if(sym) delete n[sym]; return n; });
+    setDeleteConfirm(null);
+  };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflowY:"auto", paddingBottom:80 }}>
+      <PageHeader title="Bourse">
+        <div style={{ display:"flex", alignItems:"center", gap:8, justifyContent:"flex-end" }}>
+          <button onClick={()=>fetchQuotes()} disabled={loading} style={{ display:"flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:20, background:"transparent", border:"1px solid var(--border)", color:"var(--text-muted)", fontSize:12 }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={loading?{animation:"spin 0.9s linear infinite"}:{}}>
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            {loading ? "…" : "Actualiser"}
+          </button>
+          <button onClick={()=>{ setEditPos(null); setShowForm(true); }} style={{ display:"flex", alignItems:"center", gap:4, padding:"5px 12px", borderRadius:20, background:"var(--gold-dim)", border:"1px solid var(--gold)", color:"var(--gold)", fontSize:12, fontWeight:600 }}>
+            <span style={{ fontSize:14 }}>＋</span> Ajouter
+          </button>
+        </div>
+      </PageHeader>
+
+      <div style={{ padding:"16px 16px 0" }}>
+
+        {/* ── Récapitulatif portefeuille ── */}
+        {positions.length > 0 && (
+          <div className="fade-up" style={{ background:"var(--surface)", borderRadius:16, padding:"16px", marginBottom:16, border:"1px solid var(--border)" }}>
+            <p style={{ fontSize:12, color:"var(--text-muted)", marginBottom:8, fontWeight:500, letterSpacing:"0.05em", textTransform:"uppercase" }}>Portefeuille total</p>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:12 }}>
+              <div>
+                <p style={{ fontSize:26, fontWeight:700, letterSpacing:"-0.02em" }}>{fmtPrice(totalActuel)} <span style={{ fontSize:13, color:"var(--text-muted)", fontWeight:400 }}>USD*</span></p>
+                <p style={{ fontSize:12, color:"var(--text-muted)", marginTop:2 }}>Investi : {fmtPrice(totalAchat)}</p>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <p style={{ fontSize:16, fontWeight:600, color:clr(totalPV) }}>{fmtN(totalPV)} <span style={{ fontSize:13 }}>({fmtN(totalPVPct)}%)</span></p>
+                <p style={{ fontSize:12, color:clr(totalVariJour), marginTop:2 }}>Aujourd'hui : {fmtN(totalVariJour, 2)}</p>
+              </div>
+            </div>
+            {lastRefresh && <p style={{ fontSize:11, color:"var(--text-sub)", textAlign:"right" }}>Mis à jour {lastRefresh.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</p>}
+          </div>
+        )}
+
+        {/* ── Liste des positions ── */}
+        {positions.length === 0 ? (
+          <div className="fade-up" style={{ textAlign:"center", padding:"60px 20px", color:"var(--text-muted)" }}>
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom:16, opacity:0.4 }}>
+              <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>
+            </svg>
+            <p style={{ fontSize:16, fontWeight:600, marginBottom:6 }}>Aucune action dans votre portefeuille</p>
+            <p style={{ fontSize:13 }}>Appuyez sur «&nbsp;+&nbsp;Ajouter&nbsp;» pour saisir vos premières positions.</p>
+          </div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {rows.map((r, i) => (
+              <div key={r.id} className="fade-up" style={{ animationDelay:`${i*0.05}s`, background:"var(--surface)", borderRadius:14, padding:"14px 16px", border:"1px solid var(--border)" }}>
+                {/* Ligne 1 : nom + cours */}
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <span style={{ fontWeight:700, fontSize:15, color:"var(--gold)" }}>{r.symbol}</span>
+                    <span style={{ fontSize:12, color:"var(--text-muted)", marginLeft:8 }}>{r.nom}</span>
+                    <p style={{ fontSize:11, color:"var(--text-sub)", marginTop:2 }}>{r.quantite} titre{r.quantite>1?"s":""} · Achat {fmtPrice(r.prixAchat)} {r.devise}</p>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0 }}>
+                    <p style={{ fontSize:17, fontWeight:700 }}>{fmtPrice(r.currentPrice)}</p>
+                    <p style={{ fontSize:12, color:clr(r.variJourPct), fontWeight:500 }}>
+                      {r.variJourPct !== null ? `${fmtN(r.variJourPct)}% auj.` : loading ? "…" : "—"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Ligne 2 : valeur + P/V */}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, marginBottom:10 }}>
+                  <div style={{ background:"var(--surface2)", borderRadius:8, padding:"8px 10px" }}>
+                    <p style={{ fontSize:10, color:"var(--text-muted)", marginBottom:2 }}>Valeur</p>
+                    <p style={{ fontSize:13, fontWeight:600 }}>{r.valeurActuelle !== null ? fmtPrice(r.valeurActuelle) : loading ? "…" : "—"}</p>
+                  </div>
+                  <div style={{ background:"var(--surface2)", borderRadius:8, padding:"8px 10px" }}>
+                    <p style={{ fontSize:10, color:"var(--text-muted)", marginBottom:2 }}>+/- latente</p>
+                    <p style={{ fontSize:13, fontWeight:600, color:clr(r.pvLatente) }}>{r.pvLatente !== null ? fmtN(r.pvLatente) : loading ? "…" : "—"}</p>
+                  </div>
+                  <div style={{ background:"var(--surface2)", borderRadius:8, padding:"8px 10px" }}>
+                    <p style={{ fontSize:10, color:"var(--text-muted)", marginBottom:2 }}>Perf.</p>
+                    <p style={{ fontSize:13, fontWeight:600, color:clr(r.pvPct) }}>{r.pvPct !== null ? `${fmtN(r.pvPct)}%` : loading ? "…" : "—"}</p>
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+                  <button onClick={()=>{ setEditPos(r); setShowForm(true); }}
+                    style={{ fontSize:12, padding:"5px 12px", borderRadius:20, background:"transparent", border:"1px solid var(--border)", color:"var(--text-muted)" }}>
+                    Modifier
+                  </button>
+                  <button onClick={()=>setDeleteConfirm(r.id)}
+                    style={{ fontSize:12, padding:"5px 12px", borderRadius:20, background:"transparent", border:"1px solid rgba(224,92,92,0.3)", color:"#e05c5c" }}>
+                    Supprimer
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p style={{ fontSize:11, color:"var(--text-sub)", textAlign:"center", marginTop:16 }}>
+          * Cours fournis par Finnhub · Délai ~1 min · À titre indicatif
+        </p>
+      </div>
+
+      {/* Modals */}
+      {(showForm || editPos) && (
+        <PositionForm
+          initial={editPos}
+          onSave={handleSave}
+          onClose={()=>{ setShowForm(false); setEditPos(null); }}
+        />
+      )}
+
+      {deleteConfirm && (
+        <div style={S.overlay} onClick={()=>setDeleteConfirm(null)}>
+          <div onClick={e=>e.stopPropagation()} style={{ background:"var(--surface)", borderRadius:20, padding:24, width:"100%", maxWidth:340, textAlign:"center" }}>
+            <p style={{ fontSize:17, fontWeight:600, marginBottom:8 }}>Supprimer cette position ?</p>
+            <p style={{ fontSize:14, color:"var(--text-muted)", marginBottom:20 }}>Cette action est irréversible.</p>
+            <div style={{ display:"flex", gap:10 }}>
+              <button onClick={()=>setDeleteConfirm(null)} style={{ flex:1, padding:"11px 0", borderRadius:12, background:"var(--surface2)", border:"1px solid var(--border)", color:"var(--text-muted)", fontWeight:600 }}>Annuler</button>
+              <button onClick={()=>handleDelete(deleteConfirm)} style={{ flex:1, padding:"11px 0", borderRadius:12, background:"rgba(224,92,92,0.15)", border:"1px solid #e05c5c", color:"#e05c5c", fontWeight:600 }}>Supprimer</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1576,12 +1892,19 @@ const TAB_ICONS = {
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
     </svg>
   ),
+  bourse: (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+      <polyline points="16 7 22 7 22 13"/>
+    </svg>
+  ),
 };
 
 function TabBar({ tab, setTab, onDashboardClick }) {
   const tabs = [
     { id:"dashboard",    label:"Tableau"    },
     { id:"transactions", label:"Historique" },
+    { id:"bourse",       label:"Bourse"     },
     { id:"settings",     label:"Réglages"   },
   ];
   return (
