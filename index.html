@@ -385,7 +385,7 @@ function fbSubscribe(uid, onData, onError) {
   const ref = doc(db, "budgets", uid);
   return onSnapshot(
     ref,
-    snap => onData(snap.exists() ? snap.data() : null),
+    snap => onData(snap.exists() ? snap.data() : null, snap.metadata),
     err  => {
       console.error("[fbSubscribe] Firestore error:", err.code, err.message);
       if (onError) onError(err);
@@ -440,17 +440,19 @@ function useStore(uid, email) {
   const [cardDebitDates,    setCardDebitDates]    = useState(DEFAULT_CARD_DEBIT_DATES);
   const [showFutureTx,      setShowFutureTx]      = useState(DEFAULT_SHOW_FUTURE_TX);
   const [benefitData,       setBenefitData]       = useState(DEFAULT_BENEFIT_DATA); // { [accountId]: { allotments:{}, expenses:[] } }
+  const [uiPrefs,           setUiPrefs]           = useState({}); // { eurToUsd: bool, ... }
   const saveTimer = useRef(null);
   const loadedRef = useRef(false);      // true once Firestore first snapshot received
   const lastSaveAt = useRef(0);         // timestamp of last local save, to ignore echo
   const hasReceivedData = useRef(false);// true once we've received a non-null document
   const trustedRef = useRef(false);     // true only after Firestore confirmed real data — persist is blocked until then
-  const nullGraceTimer = useRef(null);  // delays new-account init to allow real data to arrive after null cache snapshot
+  const nullGraceTimer = useRef(null);  // delays new-account init for server-null snapshots (safety net for race conditions)
   const [slowConnection, setSlowConnection] = useState(false);
   const slowTimer = useRef(null);       // shows slow connection UI after 4s
   const [retryCount, setRetryCount] = useState(0); // incrementing restarts subscription
   const [saveError, setSaveError]   = useState(false);
   const saveErrorTimer = useRef(null); // auto-dismiss save error after 8s
+  const autoCleanupDoneRef = useRef(false); // prevents auto-cleanup from firing more than once per session
 
   // ── Subscribe to Firestore in real-time ─────────────────────────────────
   useEffect(() => {
@@ -460,6 +462,7 @@ function useStore(uid, email) {
     loadedRef.current       = false;
     hasReceivedData.current = false;
     trustedRef.current      = false;
+    autoCleanupDoneRef.current = false;
     if (nullGraceTimer.current) { clearTimeout(nullGraceTimer.current); nullGraceTimer.current = null; }
     if (slowTimer.current) { clearTimeout(slowTimer.current); slowTimer.current = null; }
     setSlowConnection(false);
@@ -473,7 +476,7 @@ function useStore(uid, email) {
       }
     }, 4000);
 
-    const unsub = fbSubscribe(uid, data => {
+    const unsub = fbSubscribe(uid, (data, metadata) => {
       // Ignore echoes of our own saves (within 8 seconds)
       if (loadedRef.current && Date.now() - lastSaveAt.current < 8000) {
         dbg(`⏭ Echo ignoré (${Math.round((Date.now()-lastSaveAt.current)/1000)}s depuis save)`);
@@ -532,6 +535,7 @@ function useStore(uid, email) {
         setCardDebitDates(data.cardDebitDates || DEFAULT_CARD_DEBIT_DATES);
         setShowFutureTx(data.showFutureTx !== undefined ? data.showFutureTx : DEFAULT_SHOW_FUTURE_TX);
         setBenefitData(data.benefitData || DEFAULT_BENEFIT_DATA);
+        setUiPrefs(data.uiPrefs || {});
         snapDaysRef.current   = data.savingsSnapDays   || DEFAULT_SAVINGS_SNAP_DAYS;
         snapActiveRef.current = data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE;
 
@@ -539,8 +543,19 @@ function useStore(uid, email) {
         // Null snapshot received before any real data.
         // CRITICAL: on iOS PWA with slow network, Firebase SDK can emit a null cache snapshot
         // BEFORE the real server data arrives (observed: null at t=0, real data at t+12ms).
-        // We wait 3 seconds before treating this as a genuinely new account.
-        dbg(`⚠️ Snapshot null reçu — attente 3s avant init (nouveau compte ?)`);
+        // If the snapshot is FROM CACHE (fromCache=true), it means we're offline or the local
+        // cache has no document — we MUST NOT treat this as a new account and write SAMPLE_TX.
+        // Only a confirmed SERVER null (fromCache=false) means the account truly doesn't exist.
+        if (metadata?.fromCache) {
+          dbg(`⚠️ Snapshot null FROM CACHE — ne pas initialiser (hors ligne ou cache vide)`);
+          // Don't start the grace timer — just wait indefinitely for a server response.
+          // The slow-connection UI will appear after 4s if still no response.
+          return;
+        }
+
+        // Null from SERVER — but we still wait 3s as a safety net for race conditions
+        // (e.g. Firestore SDK returning server null before the write propagates).
+        dbg(`⚠️ Snapshot null SERVER reçu — attente 3s avant init (nouveau compte ?)`);
 
         if (nullGraceTimer.current) return; // already waiting
         nullGraceTimer.current = setTimeout(() => {
@@ -563,6 +578,7 @@ function useStore(uid, email) {
           setCardDebitDates(initCdd);
           setBenefitData(initBd);
           trustedRef.current = true; // New account — we just wrote the initial data, persist is allowed
+          lastSaveAt.current = Date.now(); // SAFETY: block echo of this init write immediately
           if (!loadedRef.current) { loadedRef.current = true; dbg(`✅ ready=true (nouveau compte)`); setReady(true); }
           fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, savingsHistory:initHistory, checkingHistory:DEFAULT_CHECKING_HISTORY, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX, benefitData:initBd });
         }, 3000);
@@ -790,6 +806,9 @@ function useStore(uid, email) {
   const removeAccount = id => {
     if (accounts.length<=1) return;
     if (!trustedRef.current) return; // SAFETY: never write to Firestore before data confirmed
+    // Cancel any pending debounced save — the direct setDoc below will carry the deletion,
+    // and the useEffect will schedule a fresh persist with the updated state afterwards.
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     setAccounts(p => p.filter(a => a.id !== id));
     setTx(p => p.filter(t => t.accountId !== id));
     setTpl(p => { const next = {...p}; delete next[id]; return next; });
@@ -797,6 +816,7 @@ function useStore(uid, email) {
     setBenefitData(p => { const next = {...p}; delete next[id]; return next; });
     // Explicitly delete nested fields in Firestore (merge:true won't delete missing fields)
     const { db, doc, setDoc, deleteField } = fb();
+    lastSaveAt.current = Date.now(); // SAFETY: block echo of this deleteField write
     setDoc(doc(db, "budgets", uid), { templates: { [id]: deleteField() }, benefitData: { [id]: deleteField() } }, { merge: true });
   };
   const updateAccount = (id,updates)=> setAccounts(p=>p.map(a=>a.id===id?{...a,...updates}:a));
@@ -889,9 +909,11 @@ function useStore(uid, email) {
   const txRef       = useRef(transactions);
   const accountsRef = useRef(accounts);
   const cddRef2     = useRef(cardDebitDates);
-  useEffect(() => { txRef.current       = transactions;    }, [transactions]);
-  useEffect(() => { accountsRef.current = accounts;        }, [accounts]);
-  useEffect(() => { cddRef2.current     = cardDebitDates;  }, [cardDebitDates]);
+  const checkingHistoryRef = useRef(checkingHistory);
+  useEffect(() => { txRef.current              = transactions;    }, [transactions]);
+  useEffect(() => { accountsRef.current        = accounts;        }, [accounts]);
+  useEffect(() => { cddRef2.current            = cardDebitDates;  }, [cardDebitDates]);
+  useEffect(() => { checkingHistoryRef.current = checkingHistory; }, [checkingHistory]);
 
   const snapDaysRef        = useRef(DEFAULT_SAVINGS_SNAP_DAYS);
   const snapActiveRef      = useRef(DEFAULT_SAVINGS_SNAP_ACTIVE);
@@ -959,7 +981,7 @@ function useStore(uid, email) {
 
       checkingAccounts.forEach(acc => {
         // Un seul snapshot par compte par mois précédent
-        if (checkingHistory.some(e => e.accountId === acc.id && e.monthKey === prevMk)) return;
+        if (checkingHistoryRef.current.some(e => e.accountId === acc.id && e.monthKey === prevMk)) return;
 
         const regular = tx.filter(t => mKey(t.date) === prevMk && t.accountId === acc.id && !t.isCard);
         const cardTxs = tx.filter(t => mKey(t.date) === prevMk && t.accountId === acc.id && t.isCard);
@@ -982,13 +1004,14 @@ function useStore(uid, email) {
     }
 
     // ── 2. Nettoyage automatique (après le snapshot) ─────────────────────
-    if (autoCleanup && currentDay >= cleanupDay) {
+    if (autoCleanup && currentDay >= cleanupDay && !autoCleanupDoneRef.current) {
       const blockers = cleanupBlockers(transactions, accounts, cardDebitDates);
       if (blockers.length > 0) {
         dbg(`🚫 Nettoyage auto bloqué — ${blockers.length} raison(s)`);
         setAutoCleanupBlockedReasons(blockers);
       } else {
         dbg(`🧹 Nettoyage auto déclenché (jour ${currentDay} >= ${cleanupDay})`);
+        autoCleanupDoneRef.current = true;
         doCleanup(cardDebitDates, benefitData);
       }
     }
@@ -1107,6 +1130,21 @@ function useStore(uid, email) {
     }
   }, [ready]); // runs once after initial load
 
+  const saveUiPref = useCallback((key, value) => {
+    if (!uid || !trustedRef.current) return;
+    const updated = { ...uiPrefs, [key]: value };
+    setUiPrefs(updated);
+    if (key === 'yfProxyUrl') _yfProxyUrl = value || YF_PROXY_URL;
+    // Update lastSaveAt only after the write completes to avoid blocking unrelated
+    // external snapshots (e.g. from another device) during the Firestore round-trip.
+    fbSave(uid, { uiPrefs: updated }).then(() => { lastSaveAt.current = Date.now(); }).catch(() => {});
+  }, [uid, uiPrefs]);
+
+  // Sync _yfProxyUrl dès que uiPrefs est chargé depuis Firestore
+  useEffect(() => {
+    _yfProxyUrl = uiPrefs?.yfProxyUrl || YF_PROXY_URL;
+  }, [uiPrefs?.yfProxyUrl]);
+
   return { ready, transactions, add, remove, update, togglePointed,
     templates, addTplItem, removeTplItem, updateTplItem, applyTemplate,
     accounts, addAccount, removeAccount, updateAccount, moveAccount,
@@ -1118,6 +1156,7 @@ function useStore(uid, email) {
     cardDebitDates, setCardDebitDate, clearCardDebitDate,
     showFutureTx, setShowFutureTx,
     benefitData, setBenefitAllotment, clearBenefitAllotment, addBenefitExpense, removeBenefitExpense, updateBenefitExpense,
+    uiPrefs, saveUiPref,
     isDemo, slowConnection, retry: () => setRetryCount(c => c+1),
     saveError, clearSaveError: () => { setSaveError(false); if (saveErrorTimer.current) { clearTimeout(saveErrorTimer.current); saveErrorTimer.current = null; } } };
 }
@@ -1556,8 +1595,53 @@ function App() {
 
 // ─── BoursePage ────────────────────────────────────────────────────────────
 // Yahoo Finance — sans clé API, proxy CORS pour contourner les restrictions navigateur
-const YF_PROXY = "https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance";
-function BoursePage({ user }) {
+// ── Proxy Yahoo Finance ───────────────────────────────────────────────────────
+// Les proxies CORS publics (corsproxy.io, allorigins…) sont devenus instables en 2025.
+// Solution pérenne : un Cloudflare Worker personnel, gratuit à 100k req/jour.
+//
+// 📋 DÉPLOIEMENT (2 minutes, gratuit) :
+//   1. Créer un compte sur https://dash.cloudflare.com
+//   2. Workers & Pages > Create > Create Worker
+//   3. Coller le contenu de yahoo-proxy-worker.js, puis Deploy
+//   4. Remplacer la valeur de YF_PROXY_URL ci-dessous par l'URL de votre worker
+//      (ex: https://yahoo-proxy.monpseudo.workers.dev)
+// ─────────────────────────────────────────────────────────────────────────────
+const YF_PROXY_URL = ""; // ← Valeur par défaut (peut être surchargée via les Réglages → Bourse)
+let   _yfProxyUrl  = YF_PROXY_URL; // mis à jour par le store dès que uiPrefs est chargé
+
+const YF_BASE = "https://query1.finance.yahoo.com/v8/finance";
+
+// yfFetch(symbol, queryString) — récupère les données Yahoo Finance pour un symbole.
+// Le symbole est passé brut (ex: "AI.PA", "EURUSD=X") sans encodage dans le path,
+// ce qui évite les doubles encodages et les problèmes de routage Cloudflare.
+async function yfFetch(symbol, qs) {
+  const fullUrl = `${YF_BASE}/chart/${encodeURIComponent(symbol)}?${qs}`;
+
+  // Tentative 1 : Cloudflare Worker personnel (URL saisie dans les Réglages ou codée en dur)
+  const proxyUrl = _yfProxyUrl;
+  if (proxyUrl) {
+    try {
+      const workerUrl = `${proxyUrl.replace(/\/$/, "")}/proxy?s=${encodeURIComponent(symbol)}&${qs}`;
+      const r = await fetch(workerUrl, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) { const d = await r.json(); if (d?.chart?.result?.[0]?.meta) return d; }
+    } catch {}
+  }
+
+  // Tentative 2 : corsproxy.io
+  try {
+    const r = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(fullUrl)}`, { signal: AbortSignal.timeout(8000) });
+    if (r.ok) { const d = await r.json(); if (d?.chart?.result?.[0]?.meta) return d; }
+  } catch {}
+
+  // Tentative 3 : allorigins
+  try {
+    const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(fullUrl)}`, { signal: AbortSignal.timeout(8000) });
+    if (r.ok) { const raw = await r.json(); if (raw?.contents) return JSON.parse(raw.contents); }
+  } catch {}
+
+  return null;
+}
+function BoursePage({ store, user }) {
   const uid = user?.uid;
   const [positions, setPositions] = useState([]);
   const [quotes, setQuotes]       = useState({});
@@ -1599,8 +1683,7 @@ function BoursePage({ user }) {
     const results = {};
     await Promise.all(pos.map(async p => {
       try {
-        const r = await fetch(`${YF_PROXY}/chart/${encodeURIComponent(p.symbol)}?interval=1m&range=1d`);
-        const d = await r.json();
+        const d = await yfFetch(p.symbol, `interval=1m&range=1d`);
         const meta = d?.chart?.result?.[0]?.meta;
         if (meta?.regularMarketPrice != null) {
           const prev = meta.chartPreviousClose ?? meta.previousClose ?? 0;
@@ -1619,20 +1702,38 @@ function BoursePage({ user }) {
     setLoading(false);
   }, [positions]);
 
-  const fetchedRef = useRef(false);
+  const fetchedRef    = useRef(false);
+  const marketFetched = useRef(false); // garde-fou : lance EUR/USD + CAC40 une seule fois après store.ready
   const [eurusd, setEurusd] = useState(null); // { rate, change, changePct }
+  const [cac40, setCac40]   = useState(null); // { price, change, changePct }
+  const eurToUsd = store?.uiPrefs?.eurToUsd !== false; // default true
 
   // ── Fetch du taux EUR/USD via v8/chart ────────────────────────────────────
   const fetchEurusd = useCallback(async () => {
     try {
-      const r = await fetch(`${YF_PROXY}/chart/EURUSD%3DX?interval=1m&range=1d`);
-      const d = await r.json();
+      const d = await yfFetch('EURUSD=X', `interval=1m&range=1d`);
       const meta = d?.chart?.result?.[0]?.meta;
       if (meta?.regularMarketPrice != null) {
         const prev = meta.chartPreviousClose ?? meta.previousClose ?? 0;
         const curr = meta.regularMarketPrice;
         setEurusd({
           rate:      curr,
+          change:    prev ? curr - prev : 0,
+          changePct: prev ? ((curr - prev) / prev) * 100 : 0,
+        });
+      }
+    } catch {}
+  }, []);
+
+  const fetchCac40 = useCallback(async () => {
+    try {
+      const d = await yfFetch('^FCHI', `interval=1m&range=1d`);
+      const meta = d?.chart?.result?.[0]?.meta;
+      if (meta?.regularMarketPrice != null) {
+        const prev = meta.chartPreviousClose ?? meta.previousClose ?? 0;
+        const curr = meta.regularMarketPrice;
+        setCac40({
+          price:     curr,
           change:    prev ? curr - prev : 0,
           changePct: prev ? ((curr - prev) / prev) * 100 : 0,
         });
@@ -1646,7 +1747,16 @@ function BoursePage({ user }) {
     }
   }, [positions]);
 
-  useEffect(() => { fetchEurusd(); }, []);
+  // ── Attendre store.ready avant de fetcher EUR/USD et CAC40 ──────────────
+  // store.ready devient true après le 1er snapshot Firestore, ce qui garantit
+  // que uiPrefs (et donc _yfProxyUrl) est déjà synchronisé.
+  // Le proxy Cloudflare est ainsi utilisé en priorité dès le 1er appel réseau.
+  useEffect(() => {
+    if (!store?.ready || marketFetched.current) return;
+    marketFetched.current = true;
+    fetchEurusd();
+    fetchCac40();
+  }, [store?.ready]);
 
 
   // ── Calculs portefeuille ───────────────────────────────────────────────────
@@ -1758,7 +1868,7 @@ function BoursePage({ user }) {
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflowY:"auto", paddingBottom:80 }}>
       <PageHeader title="Bourse">
         <div style={{ display:"flex", alignItems:"center", gap:8, justifyContent:"flex-end" }}>
-          <button onClick={()=>{ fetchQuotes(); fetchEurusd(); }} disabled={loading} style={{ display:"flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:20, background:"transparent", border:"1px solid var(--border)", color:"var(--text)", fontSize:12 }}>
+          <button onClick={()=>{ fetchQuotes(); fetchEurusd(); fetchCac40(); }} disabled={loading} style={{ display:"flex", alignItems:"center", gap:5, padding:"5px 10px", borderRadius:20, background:"var(--surface2)", border:"1px solid var(--border2)", color:"var(--text)", fontSize:12 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={loading?{animation:"spin 0.9s linear infinite"}:{}}>
               <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
             </svg>
@@ -1774,25 +1884,64 @@ function BoursePage({ user }) {
       <div style={{ padding:"16px 16px 0" }}>
 
         {/* ── Taux EUR/USD ── */}
+        {store?.uiPrefs?.showEurusd !== false && (
         <div className="fade-up" style={{ background:"var(--surface)", borderRadius:16, padding:"14px 16px", marginBottom:16, border:"1px solid var(--border)", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             <div style={{ width:36, height:36, borderRadius:10, background:"var(--surface2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>💱</div>
             <div>
-              <p style={{ fontSize:11, color:"var(--text-muted)", fontWeight:500, letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:2 }}>EUR / USD</p>
+              <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
+                <p style={{ fontSize:11, color:"var(--text-muted)", fontWeight:500, letterSpacing:"0.05em", textTransform:"uppercase" }}>{eurToUsd ? "EUR / USD" : "USD / EUR"}</p>
+                <button
+                  onClick={() => store?.saveUiPref?.('eurToUsd', !eurToUsd)}
+                  title={eurToUsd ? "Afficher USD / EUR" : "Afficher EUR / USD"}
+                  style={{ background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:6, width:22, height:22, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:13, color:"var(--text-muted)", padding:0, flexShrink:0, transition:"background 0.15s, color 0.15s" }}
+                  onMouseEnter={e => { e.currentTarget.style.background="var(--gold)"; e.currentTarget.style.color="#000"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background="var(--surface2)"; e.currentTarget.style.color="var(--text-muted)"; }}
+                >⇄</button>
+              </div>
               <p style={{ fontSize:10, color:"var(--text-sub)" }}>Taux de change</p>
             </div>
           </div>
-          {eurusd ? (
+          {eurusd ? (() => {
+            const displayRate = eurToUsd ? eurusd.rate : 1 / eurusd.rate;
+            const displayChange = eurToUsd ? eurusd.change : -(eurusd.change / (eurusd.rate * eurusd.rate));
+            const displayChangePct = eurToUsd ? eurusd.changePct : -eurusd.changePct;
+            return (
+              <div style={{ textAlign:"right" }}>
+                <p style={{ fontSize:22, fontWeight:700, letterSpacing:"-0.02em" }}>{displayRate.toFixed(4)}</p>
+                <p style={{ fontSize:12, fontWeight:500, color: displayChange >= 0 ? "#4caf7d" : "#e05c5c" }}>
+                  {displayChange >= 0 ? "▲" : "▼"} {Math.abs(displayChange).toFixed(4)} ({displayChange >= 0 ? "+" : ""}{displayChangePct.toFixed(2)}%)
+                </p>
+              </div>
+            );
+          })() : (
+            <p style={{ fontSize:13, color:"var(--text-muted)" }}>Chargement…</p>
+          )}
+        </div>
+        )}
+
+        {/* ── CAC 40 ── */}
+        {store?.uiPrefs?.showCac40 !== false && (
+        <div className="fade-up" style={{ background:"var(--surface)", borderRadius:16, padding:"14px 16px", marginBottom:16, border:"1px solid var(--border)", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ width:36, height:36, borderRadius:10, background:"var(--surface2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>🇫🇷</div>
+            <div>
+              <p style={{ fontSize:11, color:"var(--text-muted)", fontWeight:500, letterSpacing:"0.05em", textTransform:"uppercase", marginBottom:2 }}>CAC 40</p>
+              <p style={{ fontSize:10, color:"var(--text-sub)" }}>Indice Paris</p>
+            </div>
+          </div>
+          {cac40 ? (
             <div style={{ textAlign:"right" }}>
-              <p style={{ fontSize:22, fontWeight:700, letterSpacing:"-0.02em" }}>{eurusd.rate.toFixed(4)}</p>
-              <p style={{ fontSize:12, fontWeight:500, color: eurusd.change >= 0 ? "#4caf7d" : "#e05c5c" }}>
-                {eurusd.change >= 0 ? "▲" : "▼"} {Math.abs(eurusd.change).toFixed(4)} ({eurusd.change >= 0 ? "+" : ""}{eurusd.changePct.toFixed(2)}%)
+              <p style={{ fontSize:22, fontWeight:700, letterSpacing:"-0.02em" }}>{cac40.price.toLocaleString("fr-FR", { minimumFractionDigits:2, maximumFractionDigits:2 })}</p>
+              <p style={{ fontSize:12, fontWeight:500, color: cac40.change >= 0 ? "#4caf7d" : "#e05c5c" }}>
+                {cac40.change >= 0 ? "▲" : "▼"} {Math.abs(cac40.change).toLocaleString("fr-FR", { minimumFractionDigits:2, maximumFractionDigits:2 })} ({cac40.change >= 0 ? "+" : ""}{cac40.changePct.toFixed(2)}%)
               </p>
             </div>
           ) : (
             <p style={{ fontSize:13, color:"var(--text-muted)" }}>Chargement…</p>
           )}
         </div>
+        )}
 
         {/* ── Récapitulatif portefeuille ── */}
         {positions.length > 0 && (
@@ -3406,6 +3555,84 @@ function Settings({ store, user }) {
               </div>
             </div>
             <Toggle checked={store.showFutureTx} onChange={()=>store.setShowFutureTx(!store.showFutureTx)} />
+          </div>
+        </Section>
+
+        {/* Bourse */}
+        <Section title="Bourse" icon="📈">
+          {(() => {
+            const [proxyUrl, setProxyUrl] = React.useState(store.uiPrefs?.yfProxyUrl || "");
+            const [saved, setSaved] = React.useState(false);
+            React.useEffect(() => { setProxyUrl(store.uiPrefs?.yfProxyUrl || ""); }, [store.uiPrefs?.yfProxyUrl]);
+            const handleSave = () => {
+              store.saveUiPref('yfProxyUrl', proxyUrl.trim());
+              setSaved(true);
+              setTimeout(() => setSaved(false), 2000);
+            };
+            const handleClear = () => {
+              store.saveUiPref('yfProxyUrl', "");
+              setProxyUrl("");
+              setSaved(true);
+              setTimeout(() => setSaved(false), 2000);
+            };
+            return (
+              <div style={{ padding:"14px 16px" }}>
+                <div style={S.flexRow10}>
+                  <span style={{ fontSize:22 }}>☁️</span>
+                  <div style={{ flex:1 }}>
+                    <p style={S.fs14fw500}>URL du proxy Cloudflare</p>
+                    <p style={{ fontSize:12, color:"var(--text-muted)", marginBottom:10 }}>
+                      Permet d'accéder à Yahoo Finance sans limitations CORS. Optionnel mais recommandé.
+                    </p>
+                    <div style={{ display:"flex", gap:8 }}>
+                      <input
+                        type="url"
+                        value={proxyUrl}
+                        onChange={e => setProxyUrl(e.target.value)}
+                        placeholder="https://yahoo-proxy.monpseudo.workers.dev"
+                        style={{ flex:1, background:"var(--surface2)", border:"1px solid var(--border2)", borderRadius:8, padding:"7px 10px", fontSize:12, color:"var(--text)", outline:"none" }}
+                      />
+                      {proxyUrl ? (
+                        <>
+                          <button onClick={handleSave} style={{ padding:"7px 12px", borderRadius:8, background: saved ? "#4caf7d" : "var(--gold)", border:"none", color:"#000", fontSize:12, fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
+                            {saved ? "✓ Sauvegardé" : "Enregistrer"}
+                          </button>
+                          <button onClick={handleClear} title="Supprimer" style={{ padding:"7px 10px", borderRadius:8, background:"var(--surface2)", border:"1px solid var(--border2)", color:"var(--text-muted)", fontSize:14, cursor:"pointer" }}>✕</button>
+                        </>
+                      ) : (
+                        <button onClick={handleSave} disabled style={{ padding:"7px 12px", borderRadius:8, background:"var(--surface2)", border:"1px solid var(--border2)", color:"var(--text-sub)", fontSize:12, cursor:"default" }}>
+                          Enregistrer
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+          <div style={{ borderTop:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px" }}>
+            <div style={S.flexRow10}>
+              <span style={{ fontSize:22 }}>💱</span>
+              <div>
+                <p style={S.fs14fw500}>Parité EUR / USD</p>
+                <p style={{ fontSize:12, color:"var(--text-muted)" }}>
+                  {store.uiPrefs?.showEurusd !== false ? "Affichée dans l'onglet Bourse" : "Masquée"}
+                </p>
+              </div>
+            </div>
+            <Toggle checked={store.uiPrefs?.showEurusd !== false} onChange={() => store.saveUiPref('showEurusd', store.uiPrefs?.showEurusd === false)} />
+          </div>
+          <div style={{ borderTop:"1px solid var(--border)", display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 16px" }}>
+            <div style={S.flexRow10}>
+              <span style={{ fontSize:22 }}>🇫🇷</span>
+              <div>
+                <p style={S.fs14fw500}>CAC 40</p>
+                <p style={{ fontSize:12, color:"var(--text-muted)" }}>
+                  {store.uiPrefs?.showCac40 !== false ? "Affiché dans l'onglet Bourse" : "Masqué"}
+                </p>
+              </div>
+            </div>
+            <Toggle checked={store.uiPrefs?.showCac40 !== false} onChange={() => store.saveUiPref('showCac40', store.uiPrefs?.showCac40 === false)} />
           </div>
         </Section>
 
