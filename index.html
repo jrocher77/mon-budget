@@ -2163,12 +2163,32 @@ function BoursePage({ store, user }) {
   const ptrActive = React.useRef(false);
   const ptrPullRef = React.useRef(0);
   const [ptrPull, setPtrPull] = React.useState(0); // 0..1 progression
+  const [ptrRefreshing, setPtrRefreshing] = React.useState(false);
+  const [ptrDone, setPtrDone] = React.useState(false);
   const PTR_THRESHOLD = 64;
+  const PTR_HOLD_HEIGHT = 58;
 
   const setPullProgress = React.useCallback(v => {
     ptrPullRef.current = v;
     setPtrPull(v);
   }, []);
+
+  const runPullRefresh = React.useCallback(async () => {
+    if (ptrRefreshing) return;
+    setPtrDone(false);
+    setPtrRefreshing(true);
+    try {
+      await Promise.all([
+        fetchQuotes(),
+        fetchEurusd(),
+        fetchCac40(),
+      ]);
+      setPtrDone(true);
+      window.setTimeout(() => setPtrDone(false), 900);
+    } finally {
+      setPtrRefreshing(false);
+    }
+  }, [ptrRefreshing, fetchQuotes, fetchEurusd, fetchCac40]);
 
   React.useEffect(() => {
     const el = scrollRef.current;
@@ -2178,6 +2198,7 @@ function BoursePage({ store, user }) {
     const isAtTop = () => (getScroller().scrollTop || 0) <= 0;
 
     const handleTouchStart = e => {
+      if (ptrRefreshing) return;
       if (e.touches.length !== 1 || !isAtTop()) return;
       ptrStartY.current = e.touches[0].clientY;
       ptrActive.current = true;
@@ -2198,9 +2219,7 @@ function BoursePage({ store, user }) {
 
     const handleTouchEnd = () => {
       if (ptrPullRef.current >= 1) {
-        fetchQuotes();
-        fetchEurusd();
-        fetchCac40();
+        runPullRefresh();
       }
       ptrActive.current = false;
       ptrStartY.current = null;
@@ -2217,7 +2236,7 @@ function BoursePage({ store, user }) {
       el.removeEventListener("touchend", handleTouchEnd);
       el.removeEventListener("touchcancel", handleTouchEnd);
     };
-  }, [fetchQuotes, fetchEurusd, fetchCac40, setPullProgress]);
+  }, [ptrRefreshing, runPullRefresh, setPullProgress]);
 
   return (
     <div
@@ -2225,12 +2244,27 @@ function BoursePage({ store, user }) {
       style={{ display:"flex", flexDirection:"column", minHeight:"100%", paddingBottom:80, touchAction:"pan-y" }}
     >
       {/* ── Indicateur pull-to-refresh ── */}
-      {ptrPull > 0 && (
-        <div style={{ display:"flex", justifyContent:"center", alignItems:"center", height: ptrPull * PTR_THRESHOLD, overflow:"hidden", transition:"height 0.1s" }}>
+      {(ptrPull > 0 || ptrRefreshing || ptrDone) && (
+        <div style={{
+          display:"flex", justifyContent:"center", alignItems:"center", gap:8,
+          height: ptrRefreshing || ptrDone ? PTR_HOLD_HEIGHT : ptrPull * PTR_THRESHOLD,
+          overflow:"hidden", transition:"height 0.18s ease, opacity 0.18s ease",
+          color: ptrDone ? "var(--green)" : ptrPull >= 1 ? "var(--gold)" : "var(--text-muted)",
+          fontSize:12, fontWeight:700, letterSpacing:"0.02em"
+        }}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-            style={{ opacity: ptrPull, transform:`rotate(${ptrPull * 360}deg)`, transition:"transform 0.1s" }}>
+            style={{
+              opacity: ptrRefreshing || ptrDone ? 1 : Math.max(ptrPull, 0.25),
+              stroke: ptrDone ? "var(--green)" : ptrPull >= 1 ? "var(--gold)" : "var(--text-muted)",
+              animation: ptrRefreshing ? "spin 0.8s linear infinite" : "none",
+              transform: ptrRefreshing ? "none" : `rotate(${ptrPull * 360}deg)`,
+              transition:"transform 0.1s, stroke 0.15s, opacity 0.15s"
+            }}>
             <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
           </svg>
+          <span>
+            {ptrRefreshing ? "Mise à jour..." : ptrDone ? "Mis à jour" : ptrPull >= 1 ? "Relâcher pour rafraîchir" : "Tirer pour rafraîchir"}
+          </span>
         </div>
       )}
       {saving && <div style={{ textAlign:"center", padding:"4px 0", fontSize:11, color:"var(--text-muted)" }}>Sync…</div>}
@@ -4914,8 +4948,8 @@ function FormModal({ store, account, transaction, onClose, isCardTransaction=fal
       onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="form-modal-sheet sheet-in">
         <div className="form-modal-header">
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"16px 20px" }}>
-            <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:22 }}>{isEditing ? "Modifier" : "Nouvelle transaction"}</p>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 16px", gap:8 }}>
+            <p style={{ fontFamily:"'DM Serif Display',serif", fontSize:18, letterSpacing:"-0.02em", color:"var(--header-text)", flex:1, margin:0 }}>{isEditing ? "Modifier" : "Nouvelle transaction"}</p>
             <button onClick={onClose} style={{ background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:8, width:32,height:32, color:"var(--text-muted)", fontSize:16, display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
           </div>
         </div>
