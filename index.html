@@ -339,6 +339,7 @@ const DEFAULT_SAVINGS_HISTORY  = [];
 const DEFAULT_CHECKING_HISTORY = []; // { id, date, monthKey, accountId, accountName, income, expense, balance, total, pointed, auto }
 const DEFAULT_SAVINGS_SNAP_DAYS   = [1, 15];
 const DEFAULT_SAVINGS_SNAP_ACTIVE = true;
+const DEFAULT_SAVINGS_SNAPSHOT_RETENTION_MONTHS = 9999;
 const DEFAULT_CARD_DEBIT_DATES = {}; // { [accountId]: { [monthKey]: dateString } }
 const DEFAULT_SHOW_FUTURE_TX = true;
 // benefitData: { [accountId]: { allotments: { [monthKey]: { mode:"amount"|"units", amount?:number, count?:number, unitValue?:number } }, expenses: [ {id, title, amount, date} ] } }
@@ -583,6 +584,22 @@ function allotmentAmount(allotment) {
   return allotment.amount || 0;
 }
 
+function clampSavingsSnapshotRetentionMonths(value) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return DEFAULT_SAVINGS_SNAPSHOT_RETENTION_MONTHS;
+  return Math.min(9999, Math.max(1, n));
+}
+
+function savingsSnapshotRetentionLimit(dateKey, months) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const keepMonths = clampSavingsSnapshotRetentionMonths(months);
+  const targetFirst = new Date(year, month - 1 - keepMonths, 1);
+  const lastDay = new Date(targetFirst.getFullYear(), targetFirst.getMonth() + 1, 0).getDate();
+  const d = new Date(targetFirst.getFullYear(), targetFirst.getMonth(), Math.min(day || 1, lastDay));
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
+
 function useStore(uid, email) {
   const isDemo = email === DEMO_EMAIL;
   const [ready,        setReady]       = useState(false);
@@ -596,6 +613,7 @@ function useStore(uid, email) {
   const [checkingHistory,   setCheckingHistory]   = useState(DEFAULT_CHECKING_HISTORY);
   const [savingsSnapDays,   setSavingsSnapDays]   = useState(DEFAULT_SAVINGS_SNAP_DAYS);
   const [savingsSnapActive, setSavingsSnapActive] = useState(DEFAULT_SAVINGS_SNAP_ACTIVE);
+  const [savingsSnapshotRetentionMonths, setSavingsSnapshotRetentionMonths] = useState(DEFAULT_SAVINGS_SNAPSHOT_RETENTION_MONTHS);
   const [cardDebitDates,    setCardDebitDates]    = useState(DEFAULT_CARD_DEBIT_DATES);
   const [showFutureTx,      setShowFutureTx]      = useState(DEFAULT_SHOW_FUTURE_TX);
   const [benefitData,       setBenefitData]       = useState(DEFAULT_BENEFIT_DATA); // { [accountId]: { allotments:{}, expenses:[] } }
@@ -692,6 +710,7 @@ function useStore(uid, email) {
         setCheckingHistory(data.checkingHistory || DEFAULT_CHECKING_HISTORY);
         setSavingsSnapDays(data.savingsSnapDays || DEFAULT_SAVINGS_SNAP_DAYS);
         setSavingsSnapActive(data.savingsSnapActive !== undefined ? data.savingsSnapActive : DEFAULT_SAVINGS_SNAP_ACTIVE);
+        setSavingsSnapshotRetentionMonths(clampSavingsSnapshotRetentionMonths(data.savingsSnapshotRetentionMonths || DEFAULT_SAVINGS_SNAPSHOT_RETENTION_MONTHS));
         setCardDebitDates(data.cardDebitDates || DEFAULT_CARD_DEBIT_DATES);
         setShowFutureTx(data.showFutureTx !== undefined ? data.showFutureTx : DEFAULT_SHOW_FUTURE_TX);
         setBenefitData(data.benefitData || DEFAULT_BENEFIT_DATA);
@@ -740,7 +759,7 @@ function useStore(uid, email) {
           trustedRef.current = true; // New account — we just wrote the initial data, persist is allowed
           lastSaveAt.current = Date.now(); // SAFETY: block echo of this init write immediately
           if (!loadedRef.current) { loadedRef.current = true; dbg(`✅ ready=true (nouveau compte)`); setReady(true); }
-          fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, lastAutoCleanupKey:DEFAULT_LAST_AUTO_CLEANUP_KEY, savingsHistory:initHistory, checkingHistory:DEFAULT_CHECKING_HISTORY, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX, benefitData:initBd });
+          fbSave(uid, { transactions:initTx, templates:DEFAULT_TPL, accounts:initAccts, cleanupDay:DEFAULT_CLEANUP_DAY, autoCleanup:DEFAULT_AUTO_CLEANUP, lastAutoCleanupKey:DEFAULT_LAST_AUTO_CLEANUP_KEY, savingsHistory:initHistory, checkingHistory:DEFAULT_CHECKING_HISTORY, savingsSnapDays:DEFAULT_SAVINGS_SNAP_DAYS, savingsSnapActive:DEFAULT_SAVINGS_SNAP_ACTIVE, savingsSnapshotRetentionMonths:DEFAULT_SAVINGS_SNAPSHOT_RETENTION_MONTHS, cardDebitDates:initCdd, showFutureTx:DEFAULT_SHOW_FUTURE_TX, benefitData:initBd });
         }, 3000);
 
         // Don't set ready yet — we're waiting for real data or the grace timer
@@ -772,7 +791,7 @@ function useStore(uid, email) {
   }, [uid, retryCount]);
 
   // ── Auto-save to Firestore (debounced 1s) ───────────────────────────────
-  const persist = useCallback((tx, tpl, acct, cd, ac, lack, sh, ch, ssd, ssa, cdd, sft, bd) => {
+  const persist = useCallback((tx, tpl, acct, cd, ac, lack, sh, ch, ssd, ssa, ssrm, cdd, sft, bd) => {
     // SAFETY: never write to Firestore before we've confirmed real data from the server.
     // This prevents wiping data on iOS PWA reload when Firestore cache is empty.
     if (!uid || !ready || !trustedRef.current) {
@@ -790,7 +809,7 @@ function useStore(uid, email) {
         return clean;
       });
       dbg(`💾 Sauvegarde Firestore — ${cleanTx.length} tx, ${acct?.length} comptes`);
-      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, lastAutoCleanupKey: lack, savingsHistory: sh, checkingHistory: ch, savingsSnapDays: ssd, savingsSnapActive: ssa, cardDebitDates: cdd, showFutureTx: sft, benefitData: bd })
+      fbSave(uid, { transactions: cleanTx, templates: tpl, accounts: acct, cleanupDay: cd, autoCleanup: ac, lastAutoCleanupKey: lack, savingsHistory: sh, checkingHistory: ch, savingsSnapDays: ssd, savingsSnapActive: ssa, savingsSnapshotRetentionMonths: ssrm, cardDebitDates: cdd, showFutureTx: sft, benefitData: bd })
         .then(() => { setSaveError(false); })
         .catch(() => {
           setSaveError(true);
@@ -982,8 +1001,8 @@ function useStore(uid, email) {
   const [autoCleanupBlockedReasons, setAutoCleanupBlockedReasons] = useState(null);
 
   // ── Persist on every state change ───────────────────────────────────────
-  useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup, lastAutoCleanupKey, savingsHistory, checkingHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData); },
-    [transactions, templates, accounts, cleanupDay, autoCleanup, lastAutoCleanupKey, savingsHistory, checkingHistory, savingsSnapDays, savingsSnapActive, cardDebitDates, showFutureTx, benefitData, ready, persist]);
+  useEffect(() => { if (ready) persist(transactions, templates, accounts, cleanupDay, autoCleanup, lastAutoCleanupKey, savingsHistory, checkingHistory, savingsSnapDays, savingsSnapActive, savingsSnapshotRetentionMonths, cardDebitDates, showFutureTx, benefitData); },
+    [transactions, templates, accounts, cleanupDay, autoCleanup, lastAutoCleanupKey, savingsHistory, checkingHistory, savingsSnapDays, savingsSnapActive, savingsSnapshotRetentionMonths, cardDebitDates, showFutureTx, benefitData, ready, persist]);
 
   // ── Actions ─────────────────────────────────────────────────────────────
   const add    = tx  => setTx(p => [{ ...tx, id:genId(), pointed:false }, ...p]);
@@ -1066,6 +1085,7 @@ function useStore(uid, email) {
   };
   const updateCleanupDay  = day  => setCleanupDay(day);
   const updateAutoCleanup = val  => setAutoCleanup(val);
+  const updateSavingsSnapshotRetentionMonths = months => setSavingsSnapshotRetentionMonths(clampSavingsSnapshotRetentionMonths(months));
   const cleanupMonth  = () => doCleanup(cardDebitDates, benefitData);
   const checkCleanupBlockers = () => cleanupBlockers(transactions, accounts, cardDebitDates);
 
@@ -1123,7 +1143,13 @@ function useStore(uid, email) {
   };
 
   // ── Savings history actions ──────────────────────────────────────────────
-  const addSavingsSnapshot = (entry) => setSavingsHistory(p => [{ ...entry, id: genId() }, ...p].sort((a,b) => b.date.localeCompare(a.date)));
+  const addSavingsSnapshot = (entry) => setSavingsHistory(p => {
+    const limitDate = savingsSnapshotRetentionLimit(entry.date, savingsSnapshotRetentionMonths);
+    const next = [{ ...entry, id: genId() }, ...p].filter(e => e.date >= limitDate);
+    const removed = p.length + 1 - next.length;
+    if (removed > 0) dbg(`🗑️ Purge snapshots épargne — ${removed} entrée(s) supprimée(s) (avant ${limitDate})`);
+    return next.sort((a,b) => b.date.localeCompare(a.date));
+  });
   const updateSavingsSnapshot = (id, updates) => setSavingsHistory(p => p.map(e => e.id===id ? {...e,...updates} : e));
   const removeSavingsSnapshot = (id) => setSavingsHistory(p => p.filter(e => e.id !== id));
 
@@ -1394,6 +1420,7 @@ function useStore(uid, email) {
     savingsHistory, addSavingsSnapshot, updateSavingsSnapshot, removeSavingsSnapshot,
     checkingHistory, addCheckingSnapshot, removeCheckingSnapshot,
     savingsSnapDays, setSavingsSnapDays, savingsSnapActive, setSavingsSnapActive,
+    savingsSnapshotRetentionMonths, updateSavingsSnapshotRetentionMonths,
     cardDebitDates, setCardDebitDate, clearCardDebitDate,
     showFutureTx, setShowFutureTx,
     benefitData, setBenefitAllotment, clearBenefitAllotment, addBenefitExpense, removeBenefitExpense, updateBenefitExpense,
@@ -4215,6 +4242,7 @@ function Settings({ store, user, accountRowSize, setAccountRowSize }) {
         savingsHistory: DEMO_SAVINGS_HISTORY,
         savingsSnapDays: DEFAULT_SAVINGS_SNAP_DAYS,
         savingsSnapActive: DEFAULT_SAVINGS_SNAP_ACTIVE,
+        savingsSnapshotRetentionMonths: DEFAULT_SAVINGS_SNAPSHOT_RETENTION_MONTHS,
         cardDebitDates: DEMO_CARD_DEBIT_DATES,
         benefitData: DEMO_BENEFIT_DATA,
         uiPrefs: { yfProxyUrl: "https://aged-cloud-8fab.rocherje.workers.dev" },
@@ -4561,6 +4589,21 @@ function Settings({ store, user, accountRowSize, setAccountRowSize }) {
                 </p>
               </div>
               <Toggle checked={store.savingsSnapActive} onChange={()=>store.setSavingsSnapActive(!store.savingsSnapActive)} />
+            </div>
+
+            <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:16 }}>
+              <div style={S.flex1}>
+                <p style={{ fontSize:11, fontWeight:600, color:"var(--text-sub)", letterSpacing:"0.07em", textTransform:"uppercase", marginBottom:6 }}>Conservation de l'historique</p>
+                <input type="number" min="1" max="9999" step="1" inputMode="numeric"
+                  value={store.savingsSnapshotRetentionMonths}
+                  onChange={e=>{ if (e.target.value !== "") store.updateSavingsSnapshotRetentionMonths(e.target.value); }}
+                  onBlur={e=>store.updateSavingsSnapshotRetentionMonths(e.target.value)}
+                  style={{ fontSize:15, fontWeight:500, width:"100%", padding:"10px 12px", background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text)" }} />
+              </div>
+              <div style={{ padding:"12px 16px", background:"var(--gold-dim)", border:"1px solid var(--gold)", borderRadius:"var(--radius-sm)", textAlign:"center", minWidth:86 }}>
+                <p style={{ fontSize:10, color:"var(--text-sub)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:2 }}>Mois</p>
+                <p style={{ fontSize:24, fontWeight:700, fontFamily:"'DM Serif Display',serif", color:"var(--gold)" }}>{store.savingsSnapshotRetentionMonths}</p>
+              </div>
             </div>
 
             {/* Sélecteur des jours */}
