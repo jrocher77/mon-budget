@@ -903,54 +903,78 @@ function useStore(uid, email) {
     // months prior to the current one) and inject it as a synthetic allotment on the previous month so
     // that computeCarryOver() can still reconstruct the correct available balance after cleanup.
     if (bd && Object.keys(bd).length > 0) {
-      setBenefitData(prev => {
-        let changed = false;
-        const next = {};
-        const prevKey = prevMonthKey(currentKey);
-        Object.entries(prev).forEach(([accountId, acct]) => {
-          // 1. Compute carry-over from all months strictly before currentKey
-          const allMonths = new Set([
-            ...Object.keys(acct.allotments || {}),
-            ...(acct.expenses || []).map(e => mKey(e.date)),
-          ]);
-          const pastMonths = [...allMonths].filter(mk => mk < currentKey).sort();
-          let carry = 0;
-          for (const mk of pastMonths) {
-            const allotment = acct.allotments?.[mk];
-            if (allotment?._isCarryOver) {
-              carry = Math.max(carry, allotmentAmount(allotment));
-              continue;
-            }
-            const allotted = allotmentAmount(allotment);
-            const spent    = (acct.expenses || []).filter(e => mKey(e.date) === mk).reduce((s, e) => s + e.amount, 0);
-            carry = Math.max(0, carry + allotted - spent);
+      let benefitChanged = false;
+      const nextBenefitData = {};
+      const benefitDataDeletes = {};
+      const prevKey = prevMonthKey(currentKey);
+      Object.entries(bd).forEach(([accountId, acct]) => {
+        // 1. Compute carry-over from all months strictly before currentKey
+        const allMonths = new Set([
+          ...Object.keys(acct.allotments || {}),
+          ...(acct.expenses || []).map(e => mKey(e.date)),
+        ]);
+        const pastMonths = [...allMonths].filter(mk => mk < currentKey).sort();
+        let carry = 0;
+        for (const mk of pastMonths) {
+          const allotment = acct.allotments?.[mk];
+          if (allotment?._isCarryOver) {
+            carry = allotmentAmount(allotment);
+            continue;
           }
+          const allotted = allotmentAmount(allotment);
+          const spent    = (acct.expenses || []).filter(e => mKey(e.date) === mk).reduce((s, e) => s + e.amount, 0);
+          carry = Math.max(0, carry + allotted - spent);
+        }
 
-          // 2. Keep only current-month-and-future data
-          const expenses = (acct.expenses || []).filter(e => mKey(e.date) >= currentKey);
-          const allotments = Object.fromEntries(
-            Object.entries(acct.allotments || {}).filter(([mk]) => mk >= currentKey)
-          );
-
-          // 3. If there is a positive carry-over to preserve, inject it as a synthetic dotation
-          //    on the previous month (flagged _isCarryOver: true).
-          //    This allows computeCarryOver() to return the correct amount for the current month.
-          //    The _isCarryOver flag also prevents this entry from appearing as a navigable month
-          //    in the BenefitPage month selector (only real allotments/expenses show as months).
-          if (carry > 0) {
-            allotments[prevKey] = { mode: "amount", amount: carry, _isCarryOver: true };
+        // 2. Keep only current-month-and-future data
+        const expenses = (acct.expenses || []).filter(e => mKey(e.date) >= currentKey);
+        const allotments = Object.fromEntries(
+          Object.entries(acct.allotments || {}).filter(([mk]) => mk >= currentKey)
+        );
+        Object.keys(acct.allotments || {}).forEach(mk => {
+          if (mk < currentKey && mk !== prevKey) {
+            benefitChanged = true;
+            benefitDataDeletes[accountId] = {
+              ...(benefitDataDeletes[accountId] || {}),
+              allotments: {
+                ...(benefitDataDeletes[accountId]?.allotments || {}),
+                [mk]: true,
+              },
+            };
           }
-
-          const expChanged = expenses.length !== (acct.expenses || []).length;
-          const allChanged = Object.keys(allotments).length !== Object.keys(acct.allotments || {}).length;
-          // Also changed if we added or updated the carry-over entry
-          const prevEntry = acct.allotments?.[prevKey];
-          const carryChanged = carry > 0 && (!prevEntry || prevEntry.amount !== carry || !prevEntry._isCarryOver);
-          if (expChanged || allChanged || carryChanged) changed = true;
-          next[accountId] = { allotments, expenses };
         });
-        return changed ? next : prev;
+
+        // 3. If there is a positive carry-over to preserve, inject it as a synthetic dotation
+        //    on the previous month (flagged _isCarryOver: true).
+        //    This allows computeCarryOver() to return the correct amount for the current month.
+        //    The _isCarryOver flag also prevents this entry from appearing as a navigable month
+        //    in the BenefitPage month selector (only real allotments/expenses show as months).
+        if (carry > 0) {
+          allotments[prevKey] = { mode: "amount", amount: carry, _isCarryOver: true };
+        }
+
+        const expChanged = expenses.length !== (acct.expenses || []).length;
+        const allChanged = Object.keys(allotments).length !== Object.keys(acct.allotments || {}).length;
+        // Also changed if we added or updated the carry-over entry
+        const prevEntry = acct.allotments?.[prevKey];
+        const carryChanged = carry > 0 && (!prevEntry || prevEntry.amount !== carry || !prevEntry._isCarryOver);
+        if (expChanged || allChanged || carryChanged) benefitChanged = true;
+        nextBenefitData[accountId] = { allotments, expenses };
       });
+      if (benefitChanged) {
+        setBenefitData(nextBenefitData);
+        if (uid && trustedRef.current && Object.keys(benefitDataDeletes).length > 0) {
+          const { db, doc, setDoc, deleteField } = fb();
+          const benefitDeleteFields = {};
+          Object.entries(benefitDataDeletes).forEach(([accountId, value]) => {
+            benefitDeleteFields[accountId] = {
+              allotments: Object.fromEntries(Object.keys(value.allotments || {}).map(mk => [mk, deleteField()])),
+            };
+          });
+          lastSaveAt.current = Date.now();
+          setDoc(doc(db, "budgets", uid), { benefitData: benefitDeleteFields }, { merge: true }).catch(() => {});
+        }
+      }
     }
   }, [uid]);
 
@@ -1274,7 +1298,12 @@ function useStore(uid, email) {
         const pastMonths = [...allMonths].filter(m => m < mk).sort();
         let carry = 0;
         for (const m of pastMonths) {
-          const allotted = allotmentAmount(acct.allotments?.[m]);
+          const allotment = acct.allotments?.[m];
+          if (allotment?._isCarryOver) {
+            carry = allotmentAmount(allotment);
+            continue;
+          }
+          const allotted = allotmentAmount(allotment);
           const spent    = checkedExpenses.filter(e => mKey(e.date) === m).reduce((s, e) => s + e.amount, 0);
           carry = Math.max(0, carry + allotted - spent);
         }
@@ -2964,7 +2993,12 @@ function computeCarryOver(benefitAcct, upToMonthKey) {
   const pastMonths = [...allMonths].filter(mk => mk < upToMonthKey).sort();
   let carry = 0;
   for (const mk of pastMonths) {
-    const all = allotmentAmount(benefitAcct.allotments?.[mk]);
+    const allotment = benefitAcct.allotments?.[mk];
+    if (allotment?._isCarryOver) {
+      carry = allotmentAmount(allotment);
+      continue;
+    }
+    const all = allotmentAmount(allotment);
     const exp = (benefitAcct.expenses || []).filter(e => mKey(e.date) === mk).reduce((s,e) => s + e.amount, 0);
     carry = carry + all - exp;
     if (carry < 0) carry = 0; // can't carry negative balance
